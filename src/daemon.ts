@@ -33,7 +33,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   } catch {
     lock.close();
     throw new Error(
-      "An auto-machines daemon already owns this state directory",
+      "An machines-dispatch daemon already owns this state directory",
     );
   }
   const socket = join(directory, "daemon.sock");

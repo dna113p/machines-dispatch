@@ -8,7 +8,7 @@ import { startDaemon } from "./daemon.ts";
 import { request, defaultStateDir } from "./client.ts";
 import { errorMessage } from "./validation.ts";
 
-const usage = `auto-machines <command> [--state-dir directory] [--json]
+const usage = `machines-dispatch <command> [--state-dir directory] [--json]
   daemon --config file       Run in the foreground
   start --config file        Start a detached local daemon
   stop                       Stop daemon and interrupt active attempts
@@ -20,7 +20,7 @@ const usage = `auto-machines <command> [--state-dir directory] [--json]
   retry <attempt>            Deliberately retry eligible work`;
 async function main(): Promise<void> {
   const positional: string[] = [];
-  let stateDir = defaultStateDir();
+  let stateDir: string | undefined;
   let config: string | undefined;
   let json = false;
   const args = process.argv.slice(2);
@@ -41,6 +41,7 @@ async function main(): Promise<void> {
     console.log(usage);
     return;
   }
+  stateDir ??= defaultStateDir();
   if (command === "daemon") {
     if (!config || rest.length) throw new Error(usage);
     const daemon = await startDaemon({ stateDir, config });

@@ -186,8 +186,10 @@ export function tk(options: TkOptions): WorkSource {
         if (!/^[\w.-]+$/.test(ref.id))
           throw new ReportConflict("Invalid ticket ID");
         const ticket = await readTicket(join(directory, `${ref.id}.md`));
-        const marker = `<!-- auto-machines:${report.attemptId} -->`;
-        if (ticket.body.includes(marker)) return;
+        const marker = `<!-- machines-dispatch:${report.attemptId} -->`;
+        const legacyMarker = `<!-- auto-machines:${report.attemptId} -->`;
+        // Historical writeback receipts keep their identity through the rename.
+        if (ticket.body.includes(marker) || ticket.body.includes(legacyMarker)) return;
         if (
           ticket.fingerprint !== ref.fingerprint ||
           item(ticket).key !== report.item.key
@@ -213,10 +215,11 @@ export function tk(options: TkOptions): WorkSource {
             if (outcome.agents !== undefined)
               ticket.doc.set("agents", outcome.agents);
             // Derived from the persisted attempt, so replaying writeback is idempotent.
-            ticket.doc.set("auto-machines-request", report.attemptId);
+            ticket.doc.set("machines-dispatch-request", report.attemptId);
+            ticket.doc.delete("auto-machines-request");
           }
         }
-        const text = `---\n${ticket.doc.toString()}---\n${ticket.body.trimEnd()}\n\n## Auto Machines\n\n${marker}\n${summary}\n`;
+        const text = `---\n${ticket.doc.toString()}---\n${ticket.body.trimEnd()}\n\n## Machines Dispatch\n\n${marker}\n${summary}\n`;
         await replace(ticket, text);
       });
     },
@@ -241,7 +244,12 @@ async function readTicket(path: string): Promise<Ticket> {
     data.status,
   );
   const deps = v.parse(v.array(nonempty), data.deps ?? []);
-  const request = v.parse(nonempty, data["auto-machines-request"] ?? "initial");
+  const currentRequest = data["machines-dispatch-request"];
+  const legacyRequest = data["auto-machines-request"];
+  if (currentRequest !== undefined && legacyRequest !== undefined && currentRequest !== legacyRequest) {
+    throw new Error("Conflicting machines-dispatch-request and auto-machines-request values");
+  }
+  const request = v.parse(nonempty, currentRequest ?? legacyRequest ?? "initial");
   const body = match[2]!;
   const fingerprint = createHash("sha256")
     .update(JSON.stringify({ data, body }))

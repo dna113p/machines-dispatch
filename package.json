@@ -1,17 +1,18 @@
 {
-  "name": "@dna113p/auto-machines",
+  "name": "@dna113p/machines-dispatch",
   "version": "0.1.0",
   "description": "Run Machines from registered ticket sources.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dna113p/auto-machines.git"
+    "url": "git+https://github.com/dna113p/machines-dispatch.git"
   },
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "bin": {
+    "machines-dispatch": "./dist/src/cli.js",
     "auto-machines": "./dist/src/cli.js"
   },
   "exports": {

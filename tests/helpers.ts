@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TestContext } from "node:test";
 export async function workspace(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), "auto-machines-test-"));
+  const root = await mkdtemp(join(tmpdir(), "machines-dispatch-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, ".machines"));
   await mkdir(join(root, ".tickets"));

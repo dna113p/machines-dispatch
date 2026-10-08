@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("..", import.meta.url));
-const temp = await mkdtemp(join(tmpdir(), "auto-machines-package-"));
+const temp = await mkdtemp(join(tmpdir(), "machines-dispatch-package-"));
 let child;
 try {
   const packed = JSON.parse(
@@ -49,15 +49,24 @@ try {
     ],
     { cwd: temp },
   );
-  const cli = join(temp, "node_modules/@dna113p/auto-machines/dist/src/cli.js");
+  assert.equal(packed.name, "@dna113p/machines-dispatch");
+  await exec(process.execPath, ["--input-type=module", "-e",
+    'import { tk, github, startDaemon, request } from "@dna113p/machines-dispatch"; ' +
+    'if (![tk, github, startDaemon, request].every(value => typeof value === "function")) throw new Error("Missing public export");',
+  ], { cwd: temp });
+  for (const name of ["machines-dispatch", "auto-machines"]) {
+    const help = await exec(join(temp, "node_modules/.bin", name), ["help"], { cwd: temp });
+    assert.match(help.stdout, /^machines-dispatch <command>/);
+  }
+  const cli = join(temp, "node_modules/@dna113p/machines-dispatch/dist/src/cli.js");
   const demo = join(temp, "demo");
   await cp(
-    join(temp, "node_modules/@dna113p/auto-machines/examples/demo"),
+    join(temp, "node_modules/@dna113p/machines-dispatch/examples/demo"),
     demo,
     { recursive: true },
   );
   const state = join(temp, "state");
-  const config = join(demo, "auto-machines.config.ts");
+  const config = join(demo, "machines-dispatch.config.ts");
   const run = async (...args) =>
     JSON.parse(
       (
@@ -117,7 +126,7 @@ try {
     setTimeout(() => reject(new Error("Daemon failed to stop")), 5000).unref();
   });
   console.log(
-    "Installed package: native tk tickets, routing, fake Agents, Human response, and durable writeback passed.",
+    "Installed machines-dispatch package: public exports, canonical/legacy CLI, native tk tickets, routing, fake Agents, Human response, and durable writeback passed.",
   );
 } finally {
   if (child && child.exitCode === null) {

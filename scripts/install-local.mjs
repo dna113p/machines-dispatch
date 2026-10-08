@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const machines = resolve(process.argv[2] ?? join(root, "../machines"));
-const temp = await mkdtemp(join(tmpdir(), "auto-machines-dependency-"));
+const temp = await mkdtemp(join(tmpdir(), "machines-dispatch-dependency-"));
 try {
   execFileSync("npm", ["run", "build"], { cwd: machines, stdio: "inherit" });
   const packed = JSON.parse(

@@ -11,7 +11,7 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@dna113p/auto-machines": ["./src/index.ts"]
+      "@dna113p/machines-dispatch": ["./src/index.ts"]
     }
   },
   "include": ["src", "tests", "examples"]

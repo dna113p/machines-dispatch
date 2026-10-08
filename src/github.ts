@@ -131,7 +131,7 @@ export function github(options: GitHubOptions): WorkSource {
           accept: "application/vnd.github+json",
           authorization: `Bearer ${credential}`,
           "x-github-api-version": "2026-03-10",
-          "user-agent": "auto-machines",
+          "user-agent": "machines-dispatch",
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -351,8 +351,10 @@ export function github(options: GitHubOptions): WorkSource {
         );
       ({ action, summary } = parsed.output);
     }
-    const marker = `<!-- auto-machines:${report.attemptId} -->`;
+    const marker = `<!-- machines-dispatch:${report.attemptId} -->`;
+    const legacyMarker = `<!-- auto-machines:${report.attemptId} -->`;
     const body = `${marker}\n\n${summary}`;
+    const legacyBody = `${legacyMarker}\n\n${summary}`;
     let issue = await read(snapshot.number);
     if (issue.node_id !== snapshot.nodeId || issue.pull_request !== undefined)
       throw new ReportConflict("GitHub issue identity changed");
@@ -361,9 +363,10 @@ export function github(options: GitHubOptions): WorkSource {
       await list(`${base}/${snapshot.number}/comments`),
     );
     const recorded = comments.filter((comment) =>
-      comment.body.includes(marker),
+      comment.body.includes(marker) || comment.body.includes(legacyMarker),
     );
-    if (recorded.some((comment) => comment.body !== body))
+    // Match the full prior result, not just its marker: edited summaries still conflict.
+    if (recorded.some((comment) => comment.body !== body && comment.body !== legacyBody))
       throw new ReportConflict(
         "GitHub result comment changed; reconcile it before retrying delivery",
       );

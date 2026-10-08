@@ -1,4 +1,4 @@
-# auto-machines
+# Machines Dispatch
 
 A local daemon that runs Machines from registered ticket sources. Each source
 owns its ticket format, dependencies, and result updates. Machines own the actual
@@ -25,9 +25,40 @@ The bootstrap script builds and installs a packed Machines package without savin
 machine-specific paths in package metadata. After Machines 0.3 is available on
 npm, ordinary `npm install` works. Neither package is published by these commands.
 
+## Rename from Auto Machines
+
+The canonical repository is `dna113p/machines-dispatch`, the package is
+`@dna113p/machines-dispatch`, and the command is `machines-dispatch`.
+Update package imports and dependency declarations to the new package name.
+This source rename does not publish an npm release or rename an existing npm
+registry entry. Use the local build/install workflow above until published.
+
+The package retains `auto-machines` as a compatibility command pointing to the
+same executable. Existing config filenames continue to work with `--config`;
+new examples use `machines-dispatch.config.ts`. Configs with runtime imports of
+`@dna113p/auto-machines` need their imports/dependency updated; the old package
+specifier is not an alias for the new package.
+
+Fresh installations default to the new state directory. When only the legacy
+`auto-machines` state directory exists, clients reuse it in place, including its
+journal and daemon socket. No automatic move, database copy, or service restart
+occurs. If both old and new directories exist and are not aliases for the same
+directory, pass `--state-dir` explicitly rather than silently choosing one.
+Help and explicit state-directory commands work even in that situation. To move
+state later, stop its owning daemon first and move the complete directory;
+never merge independent execution journals or copy a live SQLite database.
+
+Previously written `auto-machines-request` metadata and `<!-- auto-machines:... -->`
+receipts remain recognized. New writes use `machines-dispatch-request` and
+`<!-- machines-dispatch:... -->`. Routing replaces the legacy request field;
+conflicting old/new request values require reconciliation. Existing tickets,
+comments, summaries, and attempt IDs are not rewritten simply to change branding.
+Do not concurrently run old/new installations against separate state directories
+for the same work: local deduplication still covers only one state directory.
+
 ## Register a ticket source
 
-Create `auto-machines.config.ts`:
+Create `machines-dispatch.config.ts`:
 
 ```ts
 export default ({ tk, github }) => [
@@ -66,29 +97,30 @@ registration supplies these settings.
 ## Start and inspect
 
 ```sh
-auto-machines start --config ./auto-machines.config.ts
-auto-machines sources
-auto-machines status
-auto-machines status ATTEMPT_ID --json
-auto-machines logs ATTEMPT_ID
-auto-machines respond ATTEMPT_ID REQUEST_ID approve
-auto-machines cancel ATTEMPT_ID
-auto-machines retry ATTEMPT_ID
-auto-machines stop
+machines-dispatch start --config ./machines-dispatch.config.ts
+machines-dispatch sources
+machines-dispatch status
+machines-dispatch status ATTEMPT_ID --json
+machines-dispatch logs ATTEMPT_ID
+machines-dispatch respond ATTEMPT_ID REQUEST_ID approve
+machines-dispatch cancel ATTEMPT_ID
+machines-dispatch retry ATTEMPT_ID
+machines-dispatch stop
 ```
 
-Use `node dist/src/cli.js` in place of `auto-machines` when working directly from
+Use `node dist/src/cli.js` in place of `machines-dispatch` when working directly from
 this checkout. `daemon --config ...` runs in the foreground for a service manager
 or debugging. `start` detaches and returns after the local socket becomes ready.
 All commands accept `--state-dir`; clients must use the daemon's state directory.
 Add `--json` for compact machine-readable output.
 
-State defaults to `$XDG_STATE_HOME/auto-machines`, or
-`~/.local/state/auto-machines`. The directory contains the local control socket,
+For a fresh installation, state defaults to `$XDG_STATE_HOME/machines-dispatch`, or
+`~/.local/state/machines-dispatch`. The directory contains the local control socket,
 execution journal, singleton lock database, and background daemon log. Pending
 Human questions and Agent observations are available through status and logs.
 No credentials or home-directory paths are added to ticket files automatically.
 Machine-authored summaries are written as supplied.
+Legacy state is reused as described in the rename section above.
 
 Closing a client does not stop runs. Stopping the daemon interrupts its runs and
 terminates their ordinary owned subprocesses. Deliberately detached or otherwise
@@ -201,7 +233,7 @@ conflict instead of inventing tracker metadata or silently ignoring routing.
 A missing or malformed outcome is retained as a writeback conflict; it never
 closes the ticket. A Machine's final state alone is not a ticket outcome.
 
-The tk adapter manages `auto-machines-request` for routed work and puts attempt
+The tk adapter manages `machines-dispatch-request` for routed work and puts attempt
 markers in result notes. Replaying a writeback does not append duplicate notes.
 Ordinary edits and polling do not rerun an already-recorded request. Use `retry`
 for deliberate re-execution of an eligible ticket, including a reopened ticket.

@@ -63,7 +63,7 @@ test("routing and completion preserve metadata and write results idempotently", 
   await source.apply(report);
   assert.equal(await readTicket(root, "a"), first);
   assert.match(first, /custom: retained/);
-  assert.match(first, /auto-machines-request: route-1/);
+  assert.match(first, /machines-dispatch-request: route-1/);
   const next = (await source.scan()).items[0]!;
   assert.notEqual(next.key, item.key);
   assert.equal((await source.prepare(next))?.machine, "implement");
@@ -121,4 +121,47 @@ test("hold records findings without closing or manufacturing another request", a
   });
   assert.equal((await source.scan()).items[0]!.key, item.key);
   assert.match(await readTicket(root, "a"), /Need a decision/);
+});
+
+
+test("legacy routed tickets retain identity and new routing writes canonical metadata", async (t) => {
+  const root = await workspace(t);
+  await ticket(root, "a", "machine: research\nauto-machines-request: old-attempt\n");
+  const source = tk({ id: "s", cwd: root });
+  const item = (await source.scan()).items[0]!;
+  assert.equal(item.key, "a:old-attempt");
+  assert.ok(await source.prepare(item));
+  await source.apply({ attemptId: "new-attempt", item, status: "completed", result: {
+    state: "done", output: { action: "route", machine: "implement", summary: "Ready" },
+  } });
+  const text = await readTicket(root, "a");
+  assert.match(text, /machines-dispatch-request: new-attempt/);
+  assert.doesNotMatch(text, /auto-machines-request:/);
+  assert.match(text, /## Machines Dispatch/);
+  assert.match(text, /<!-- machines-dispatch:new-attempt -->/);
+  assert.equal((await source.scan()).items[0]!.key, "a:new-attempt");
+});
+
+test("legacy tk writeback markers prevent replay after the rename", async (t) => {
+  const root = await workspace(t);
+  await ticket(root, "a", "machine: research\n");
+  const source = tk({ id: "s", cwd: root });
+  const item = (await source.scan()).items[0]!;
+  const applied = (await readTicket(root, "a")) + "\n## Auto Machines\n\n<!-- auto-machines:old-result -->\nAlready reported\n";
+  await writeFile(join(root, ".tickets/a.md"), applied);
+  await source.apply({ attemptId: "old-result", item, status: "completed", result: {
+    state: "done", output: { action: "hold", summary: "Already reported" },
+  } });
+  assert.equal(await readTicket(root, "a"), applied);
+});
+
+test("conflicting legacy and canonical request IDs are not scheduled", async (t) => {
+  const root = await workspace(t);
+  await ticket(root, "a", "auto-machines-request: one\nmachines-dispatch-request: two\n");
+  const source = tk({ id: "s", cwd: root, defaultMachine: "work" });
+  const result = await source.scan();
+  assert.equal(result.items.length, 0);
+  assert.match(result.issues!.join(" "), /conflicting.*request/i);
+  await ticket(root, "a", "auto-machines-request: one\nmachines-dispatch-request: one\n");
+  assert.equal((await source.scan()).items[0]!.key, "a:one");
 });

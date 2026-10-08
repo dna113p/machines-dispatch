@@ -1,4 +1,6 @@
 node_modules/
 dist/
 *.tgz
+.machines-dispatch/
+# Ignore legacy local state during upgrades.
 .auto-machines/

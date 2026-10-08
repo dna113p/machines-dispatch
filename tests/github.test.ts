@@ -612,7 +612,7 @@ test("pagination aliases cannot alter the resource, filters, or page sequence", 
 test("configuration resolves GitHub cwd and home relative to its config", async (t) => {
   const root = await workspace(t);
   const { options } = fixture();
-  const config = join(root, "auto-machines.config.ts");
+  const config = join(root, "machines-dispatch.config.ts");
   await writeFile(
     config,
     `export default ({ github }) => [github({
@@ -669,4 +669,36 @@ test("environment authentication is lazy, prefers GH_TOKEN, and refreshes after 
     new Headers(state.calls[1]!.init!.headers).get("authorization"),
     "Bearer fallback",
   );
+});
+
+
+for (const action of ["hold", "complete"] as const) {
+  test(`legacy GitHub ${action} result is recognized without duplicate comments`, async () => {
+    const { source, state } = fixture();
+    const item = (await source.scan()).items[0]!;
+    const body = "<!-- auto-machines:attempt-1 -->\n\nVerified.";
+    state.comments.push({ body });
+    await source.apply(report(item, action));
+    await source.apply(report(item, action));
+    assert.deepEqual(state.comments, [{ body }]);
+    assert.equal(state.calls.filter((call) => call.method === "POST").length, 0);
+    assert.equal(state.calls.filter((call) => call.method === "PATCH").length, action === "complete" ? 1 : 0);
+    assert.equal(state.issues[0]!.state, action === "complete" ? "closed" : "open");
+  });
+}
+
+test("edited legacy GitHub result comments still conflict", async () => {
+  const { source, state } = fixture();
+  const item = (await source.scan()).items[0]!;
+  state.comments.push({ body: "<!-- auto-machines:attempt-1 -->\n\nHuman changed the summary." });
+  await assert.rejects(source.apply(report(item)), /result comment changed/);
+  assert.equal(state.calls.filter((call) => call.method !== "GET").length, 0);
+});
+
+test("new GitHub results and User-Agent use machines-dispatch", async () => {
+  const { source, state } = fixture();
+  const item = (await source.scan()).items[0]!;
+  await source.apply(report(item, "hold"));
+  assert.equal(state.comments[0]!.body, "<!-- machines-dispatch:attempt-1 -->\n\nVerified.");
+  assert.ok(state.calls.every((call) => new Headers(call.init!.headers).get("user-agent") === "machines-dispatch"));
 });
