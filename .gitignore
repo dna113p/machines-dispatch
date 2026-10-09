@@ -4,3 +4,6 @@ dist/
 .machines-dispatch/
 # Ignore legacy local state during upgrades.
 .auto-machines/
+
+# Private, per-run Machine evidence.
+.machine-runs/
