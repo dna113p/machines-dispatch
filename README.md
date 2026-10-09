@@ -74,6 +74,7 @@ export default ({ tk, github }) => [
     repository: "owner/backend",
     requiredLabels: ["status:ready", "automation:machines"],
     excludedLabels: ["status:needs-scoping"],
+    allowedAuthorAssociations: ["OWNER", "MEMBER", "COLLABORATOR"],
     defaultMachine: "implement",
     input: { repository: "backend" },
   }),
@@ -184,6 +185,18 @@ must be present, and no `excludedLabels` entry may be present. At least one requ
 label is mandatory. Pull requests are excluded. Labels are matched exactly; the
 adapter never creates or changes labels. A single trusted `defaultMachine` is
 required, with optional `input`, `agents`, and `home` for the whole registration.
+
+Labels alone do not establish that the issue text is trusted. Anyone who can open
+or edit an issue controls its title and body, including after a maintainer applies
+the labels, and that text reaches the Machine's Agent as task input. Optional
+`allowedAuthorAssociations` lists the GitHub
+[`author_association`](https://docs.github.com/en/rest/issues/issues) values
+admitted, for example `["OWNER", "MEMBER", "COLLABORATOR"]`. It must be a
+non-empty list of non-empty strings, matched exactly. When it is set, an issue
+whose author association is unlisted or absent is reported in source diagnostics
+instead of being admitted, and `prepare` rechecks it before launch. The value
+comes from the issue the adapter already reads; no additional request is made.
+When the option is omitted, issues from any author are admitted.
 
 The adapter checks GitHub's [native issue dependencies](https://docs.github.com/en/rest/issues/issue-dependencies)
 during discovery, preparation, and result delivery. A prerequisite satisfies this

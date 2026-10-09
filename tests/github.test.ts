@@ -257,6 +257,114 @@ test("prepare rereads snapshots and admission without changing execution identit
   assert.equal(await source.prepare(edited), undefined);
 });
 
+test("an allowed author association is scanned and launched without extra requests", async () => {
+  const requests = (calls: { url: URL; method: string }[]) =>
+    calls.map((call) => `${call.method} ${call.url.pathname}${call.url.search}`);
+  const plain = fixture();
+  const gated = fixture({ allowedAuthorAssociations: ["OWNER", "MEMBER"] });
+  for (const { state } of [plain, gated])
+    state.issues = [issue(1, { author_association: "MEMBER" })];
+  const expected = (await plain.source.scan()).items;
+  const expectedLaunch = await plain.source.prepare(expected[0]!);
+  const scan = await gated.source.scan();
+  assert.deepEqual(scan.items, expected);
+  assert.deepEqual(scan.issues, []);
+  const launch = await gated.source.prepare(scan.items[0]!);
+  assert.deepEqual(launch, expectedLaunch);
+  assert.equal(
+    (launch!.input as { ticket: { body: string } }).ticket.body,
+    "Acceptance: verified.",
+  );
+  assert.deepEqual(requests(gated.state.calls), requests(plain.state.calls));
+  assert.equal(gated.state.calls.length, 4);
+});
+
+test("an unlisted or missing author association is diagnosed once and never launched", async () => {
+  const { source, state } = fixture({
+    allowedAuthorAssociations: ["OWNER", "MEMBER"],
+  });
+  state.issues = [
+    issue(1, { author_association: "OWNER" }),
+    issue(2, { author_association: "NONE" }),
+    issue(3),
+    issue(4, { author_association: "member" }),
+    issue(5, { author_association: "CONTRIBUTOR", labels: ["ready"] }),
+  ];
+  const scan = await source.scan();
+  assert.deepEqual(
+    scan.items.map((entry) => entry.label),
+    ["owner/repo#1"],
+  );
+  assert.deepEqual(scan.issues, [
+    "owner/repo#2: author association NONE is not in allowedAuthorAssociations",
+    "owner/repo#3: author association unknown is not in allowedAuthorAssociations",
+    "owner/repo#4: author association member is not in allowedAuthorAssociations",
+  ]);
+  assert.deepEqual(
+    state.calls
+      .filter((call) => call.url.pathname.endsWith("blocked_by"))
+      .map((call) => call.url.pathname),
+    [`${prefix}/1/dependencies/blocked_by`],
+  );
+  // A maintainer's label does not carry over to a later, untrusted author.
+  const item = scan.items[0]!;
+  assert.ok(await source.prepare(item));
+  for (const author_association of ["NONE", undefined]) {
+    Object.assign(state.issues[0]!, { author_association });
+    const calls = state.calls.length;
+    assert.equal(await source.prepare(item), undefined);
+    assert.equal(state.calls.length, calls + 1);
+  }
+  // Work found by an ungated registration is still refused at launch.
+  const open = fixture();
+  open.state.issues = [issue(2, { author_association: "NONE" })];
+  const untrusted = (await open.source.scan()).items[0]!;
+  assert.equal(await source.prepare(untrusted), undefined);
+  assert.equal(state.calls.filter((call) => call.method !== "GET").length, 0);
+});
+
+test("omitting allowedAuthorAssociations admits any author and keeps work refs", async () => {
+  const { source, state } = fixture();
+  const baseline = (await source.scan()).items[0]!;
+  const baselineLaunch = await source.prepare(baseline);
+  for (const author_association of ["NONE", "FIRST_TIME_CONTRIBUTOR", "OWNER"]) {
+    Object.assign(state.issues[0]!, { author_association });
+    const scan = await source.scan();
+    assert.deepEqual(scan.items, [baseline]);
+    assert.deepEqual(scan.issues, []);
+    assert.deepEqual(await source.prepare(baseline), baselineLaunch);
+  }
+});
+
+test("allowedAuthorAssociations must be a non-empty list of non-empty strings", () => {
+  const { options } = fixture();
+  const invalid: unknown[] = [
+    [],
+    [""],
+    ["OWNER", ""],
+    [" OWNER"],
+    ["OWNER", 3],
+    [null],
+    "OWNER",
+    null,
+  ];
+  for (const allowedAuthorAssociations of invalid)
+    assert.throws(
+      () =>
+        github({
+          ...options,
+          allowedAuthorAssociations,
+        } as GitHubOptions),
+      `accepted ${JSON.stringify(allowedAuthorAssociations)}`,
+    );
+  assert.doesNotThrow(() =>
+    github({ ...options, allowedAuthorAssociations: ["OWNER"] }),
+  );
+  assert.doesNotThrow(() =>
+    github({ ...options, allowedAuthorAssociations: undefined }),
+  );
+});
+
 test("transfers, changed issue IDs, and mismatched work refs cannot launch or write", async () => {
   const { source, state } = fixture();
   const item = (await source.scan()).items[0]!;

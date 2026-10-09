@@ -18,6 +18,8 @@ export interface GitHubOptions {
   repository: string;
   requiredLabels: readonly string[];
   excludedLabels?: readonly string[];
+  /** GitHub author_association values whose issue text may reach an Agent. */
+  allowedAuthorAssociations?: readonly string[];
   defaultMachine: string;
   input?: JsonValue;
   agents?: Readonly<Record<string, string>>;
@@ -39,6 +41,7 @@ const issueSchema = v.object({
   state: v.picklist(["open", "closed"]),
   state_reason: v.optional(v.nullable(v.string())),
   labels: v.array(v.union([v.string(), v.object({ name: v.string() })])),
+  author_association: v.optional(v.string()),
   pull_request: v.optional(v.unknown()),
 });
 type Issue = v.InferOutput<typeof issueSchema>;
@@ -70,6 +73,13 @@ export function github(options: GitHubOptions): WorkSource {
   const excluded = v.parse(v.array(nonempty), options.excludedLabels ?? []);
   if (required.some((label) => excluded.includes(label)))
     throw new Error("A GitHub label cannot be both required and excluded");
+  const associations =
+    options.allowedAuthorAssociations === undefined
+      ? undefined
+      : v.parse(
+          v.pipe(v.array(nonempty), v.minLength(1)),
+          options.allowedAuthorAssociations,
+        );
   const input = v.parse(jsonValue, options.input ?? null);
   const agents =
     options.agents === undefined
@@ -267,6 +277,14 @@ export function github(options: GitHubOptions): WorkSource {
       !excluded.some((label) => present.includes(label))
     );
   }
+  // Kept apart from admitted(): result delivery checks admission, not authorship.
+  function trusted(issue: Issue): boolean {
+    return (
+      associations === undefined ||
+      (issue.author_association !== undefined &&
+        associations.includes(issue.author_association))
+    );
+  }
   async function dependencies(number: number): Promise<Issue[]> {
     return v.parse(
       v.array(issueSchema),
@@ -444,6 +462,12 @@ export function github(options: GitHubOptions): WorkSource {
         identity(issue);
         if (!admitted(issue) || seen.has(issue.node_id)) continue;
         seen.add(issue.node_id);
+        if (!trusted(issue)) {
+          diagnostics.push(
+            `${repository}#${issue.number}: author association ${issue.author_association ?? "unknown"} is not in allowedAuthorAssociations`,
+          );
+          continue;
+        }
         const deps = await dependencies(issue.number);
         if (deps.some((dep) => !satisfied(dep))) {
           diagnostics.push(
@@ -459,7 +483,7 @@ export function github(options: GitHubOptions): WorkSource {
     async prepare(work) {
       const snapshot = ref(work);
       const issue = await read(snapshot.number);
-      if (!admitted(issue)) return undefined;
+      if (!admitted(issue) || !trusted(issue)) return undefined;
       const deps = await dependencies(issue.number);
       if (
         !unchanged(issue, deps, snapshot) ||
