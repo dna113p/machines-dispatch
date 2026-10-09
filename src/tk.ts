@@ -30,6 +30,8 @@ export interface TkOptions {
   cwd: string;
   ticketsDir?: string;
   defaultMachine?: string;
+  /** Machine names this source may launch, including through `route`. */
+  allowedMachines?: readonly string[];
   agents?: Readonly<Record<string, string>>;
   home?: string;
 }
@@ -66,6 +68,7 @@ export function tk(options: TkOptions): WorkSource {
   const directory = resolve(cwd, options.ticketsDir ?? ".tickets");
   const home =
     options.home === undefined ? undefined : resolve(cwd, options.home);
+  const allowed = allowedMachines(options);
   // Only metadata updates serialize. Machine executions never take this queue.
   let writes: Promise<void> = Promise.resolve();
   const serial = (write: () => Promise<void>) => {
@@ -122,6 +125,21 @@ export function tk(options: TkOptions): WorkSource {
       ticket.deps.every((id) => entries.get(id)?.status === "closed")
     );
   }
+  function selection(ticket: Ticket): unknown {
+    return ticket.data.machine === undefined
+      ? options.defaultMachine
+      : ticket.data.machine;
+  }
+  // A malformed selection keeps its own error from prepare.
+  function permitted(ticket: Ticket, issues: string[]): boolean {
+    const machine = selection(ticket);
+    if (!allowed || !v.is(nonempty, machine) || allowed.has(machine))
+      return true;
+    issues.push(
+      `${ticket.id}: Machine "${machine}" is not allowed for this source`,
+    );
+    return false;
+  }
   function item(ticket: Ticket): WorkItem {
     return {
       key: `${ticket.id}:${ticket.request}`,
@@ -134,7 +152,10 @@ export function tk(options: TkOptions): WorkSource {
     async scan(): Promise<SourceScan> {
       const { entries, issues } = await tickets();
       const items = [...entries.values()]
-        .filter((ticket) => eligible(ticket, entries, issues))
+        .filter(
+          (ticket) =>
+            eligible(ticket, entries, issues) && permitted(ticket, issues),
+        )
         .map(item);
       return { items, issues: [...new Set(issues)] };
     },
@@ -146,18 +167,16 @@ export function tk(options: TkOptions): WorkSource {
         !ticket ||
         item(ticket).key !== work.key ||
         ticket.fingerprint !== ref.fingerprint ||
-        !eligible(ticket, entries, [])
+        !eligible(ticket, entries, []) ||
+        !permitted(ticket, [])
       )
         return undefined;
-      const selection =
-        ticket.data.machine === undefined
-          ? options.defaultMachine
-          : ticket.data.machine;
-      if (selection === undefined)
+      const selected = selection(ticket);
+      if (selected === undefined)
         throw new Error(
           `${ticket.id}: no Machine selected and no default configured`,
         );
-      const machine = v.parse(nonempty, selection);
+      const machine = v.parse(nonempty, selected);
       const input = v.parse(jsonValue, {
         ticket: {
           id: ticket.id,
@@ -205,6 +224,14 @@ export function tk(options: TkOptions): WorkSource {
               `${ref.id}: expected a complete, route, or hold result with a summary`,
             );
           const outcome = parsed.output;
+          if (
+            outcome.action === "route" &&
+            allowed &&
+            !allowed.has(outcome.machine)
+          )
+            throw new ReportConflict(
+              `${ref.id}: route to Machine "${outcome.machine}" is not allowed for this source`,
+            );
           summary = outcome.summary;
           if (outcome.action === "complete") ticket.doc.set("status", "closed");
           else if (outcome.action === "route") {
@@ -224,6 +251,26 @@ export function tk(options: TkOptions): WorkSource {
       });
     },
   };
+}
+function allowedMachines(options: TkOptions): ReadonlySet<string> | undefined {
+  const names: unknown = options.allowedMachines;
+  if (names === undefined) return undefined;
+  if (!Array.isArray(names) || !names.length)
+    throw new Error("allowedMachines must be a non-empty array of Machine names");
+  // Array.from fills holes, which every() would skip.
+  if (!Array.from(names).every((name) => v.is(nonempty, name)))
+    throw new Error("allowedMachines must contain only non-empty Machine names");
+  const allowed = new Set<string>(names);
+  if (allowed.size !== names.length)
+    throw new Error("allowedMachines must not contain duplicate Machine names");
+  if (
+    options.defaultMachine !== undefined &&
+    !allowed.has(options.defaultMachine)
+  )
+    throw new Error(
+      `defaultMachine "${options.defaultMachine}" is not in allowedMachines`,
+    );
+  return allowed;
 }
 async function readTicket(path: string): Promise<Ticket> {
   if (!(await lstat(path)).isFile())

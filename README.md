@@ -85,6 +85,13 @@ Optional `agents` maps Machine roles to existing Agent preset names. Optional
 `home` selects a Machines configuration home, relative to `cwd`. Otherwise normal
 Machines global/project discovery applies. Restart to reload registrations.
 
+Optional `allowedMachines` on a tk registration lists the only Machine names it
+may launch; when `defaultMachine` is also set, it must be in the list. A ticket
+selecting any other Machine is not admitted and is reported by `sources`. The
+list also applies to `route` outcomes. Without it, a tk source launches whatever
+its tickets name. The GitHub source is unaffected: its issues cannot select
+Machines.
+
 One registration can cover a workspace containing several repositories. Put its
 shared tickets in one directory, and include repository names or relative paths
 in ticket input. The Machine decides how to work in those repositories.
@@ -230,6 +237,8 @@ leaves it open without launching it again locally. For tk, `route` appends findi
 updates its Machine and optional input/agents, and creates a new execution request.
 GitHub supports only `complete` and `hold`; `route` produces a visible writeback
 conflict instead of inventing tracker metadata or silently ignoring routing.
+When a tk registration sets `allowedMachines`, a `route` naming a Machine outside
+the list is also a writeback conflict, and the ticket is left unmodified.
 A missing or malformed outcome is retained as a writeback conflict; it never
 closes the ticket. A Machine's final state alone is not a ticket outcome.
 
