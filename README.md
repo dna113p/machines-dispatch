@@ -25,37 +25,6 @@ The bootstrap script builds and installs a packed Machines package without savin
 machine-specific paths in package metadata. After Machines 0.3 is available on
 npm, ordinary `npm install` works. Neither package is published by these commands.
 
-## Rename from Auto Machines
-
-The canonical repository is `dna113p/machines-dispatch`, the package is
-`@dna113p/machines-dispatch`, and the command is `machines-dispatch`.
-Update package imports and dependency declarations to the new package name.
-This source rename does not publish an npm release or rename an existing npm
-registry entry. Use the local build/install workflow above until published.
-
-The package retains `auto-machines` as a compatibility command pointing to the
-same executable. Existing config filenames continue to work with `--config`;
-new examples use `machines-dispatch.config.ts`. Configs with runtime imports of
-`@dna113p/auto-machines` need their imports/dependency updated; the old package
-specifier is not an alias for the new package.
-
-Fresh installations default to the new state directory. When only the legacy
-`auto-machines` state directory exists, clients reuse it in place, including its
-journal and daemon socket. No automatic move, database copy, or service restart
-occurs. If both old and new directories exist and are not aliases for the same
-directory, pass `--state-dir` explicitly rather than silently choosing one.
-Help and explicit state-directory commands work even in that situation. To move
-state later, stop its owning daemon first and move the complete directory;
-never merge independent execution journals or copy a live SQLite database.
-
-Previously written `auto-machines-request` metadata and `<!-- auto-machines:... -->`
-receipts remain recognized. New writes use `machines-dispatch-request` and
-`<!-- machines-dispatch:... -->`. Routing replaces the legacy request field;
-conflicting old/new request values require reconciliation. Existing tickets,
-comments, summaries, and attempt IDs are not rewritten simply to change branding.
-Do not concurrently run old/new installations against separate state directories
-for the same work: local deduplication still covers only one state directory.
-
 ## Register a ticket source
 
 Create `machines-dispatch.config.ts`:
@@ -128,7 +97,6 @@ execution journal, singleton lock database, and background daemon log. Pending
 Human questions and Agent observations are available through status and logs.
 No credentials or home-directory paths are added to ticket files automatically.
 Machine-authored summaries are written as supplied.
-Legacy state is reused as described in the rename section above.
 
 Closing a client does not stop runs. Stopping the daemon interrupts its runs and
 terminates their ordinary owned subprocesses. Deliberately detached or otherwise
@@ -321,6 +289,14 @@ Configurations can return any conforming source alongside `tk(...)` and
 `github(...)` registrations.
 The exported `request` client lets a future MCP or Pi adapter use the same daemon;
 the first version supplies CLI access rather than separate harness plugins.
+
+## Auto Machines compatibility
+
+The package also installs an `auto-machines` command for the same executable.
+When only an `auto-machines` state directory exists, clients use it in place;
+when both exist as separate directories, pass `--state-dir`. Tickets carrying
+`auto-machines-request` metadata or `<!-- auto-machines:... -->` receipts are
+still recognized; new writes use the `machines-dispatch` forms.
 
 ## Demonstration and checks
 
