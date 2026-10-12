@@ -17,6 +17,8 @@ export interface SourceScan {
 }
 export interface LaunchRequest extends PrepareMachineRunOptions {
   readonly cwd: string;
+  /** What the run is for, in its published run status. The work item's label when absent. */
+  readonly label?: string;
 }
 export interface WorkReport {
   readonly attemptId: string;

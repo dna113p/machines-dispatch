@@ -110,6 +110,14 @@ Closing a client does not stop runs. Stopping the daemon interrupts its runs and
 terminates their ordinary owned subprocesses. Deliberately detached or otherwise
 uncooperative processes retain Machines' existing lifecycle limitations.
 
+When `MACHINES_RUN_STATUS_DIR` is set in the daemon's environment, each attempt's
+run also publishes Machines run status there, so a coding agent's status line can
+show it. The run is labelled with what the source says it is for (a tk ticket's
+id and title, a GitHub issue's reference and title), or with the work item's
+label. A session that did not start the run pulls it in with
+`machine watch <start of the label>`. A waiting run's question is shown, and is
+still answered with `machines-dispatch respond`.
+
 ## Updates
 
 The daemon runs every Machine with its own installed copy of `@dna113p/machines`.

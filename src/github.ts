@@ -493,6 +493,7 @@ export function github(options: GitHubOptions): WorkSource {
       return {
         cwd,
         machine: options.defaultMachine,
+        label: `${work.label}: ${issue.title}`,
         input: {
           ticket: {
             id: work.label,

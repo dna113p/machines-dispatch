@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { startDaemon } from "../src/daemon.ts";
 import { request } from "../src/client.ts";
 import { tk } from "../src/tk.ts";
@@ -246,4 +246,55 @@ agent:agent("Work",{completed:"done"},{using:"unconfigured"}),done:final()}});`,
   assert.match(attempts[0]!.error!, /unconfigured/);
   await assert.rejects(access(join(root, "effect.txt")));
   assert.doesNotMatch(await readTicket(root, "a"), new RegExp(root));
+});
+
+test("where run status is published, each attempt's run is published under its ticket's name", async (t) => {
+  const root = await workspace(t);
+  await definition(root, "review", "complete", true);
+  await ticket(root, "a", "", "# Fix the widget\n\nAcceptance criteria: verified.");
+  await ticket(root, "b");
+  const source = tk({
+    id: "op",
+    cwd: root,
+    home: join(root, "home"),
+    defaultMachine: "review",
+  });
+  const launches = await Promise.all(
+    (await source.scan()).items.map((item) => source.prepare(item)),
+  );
+  assert.deepEqual(launches.map((launch) => launch!.label).sort(), [
+    "a: Fix the widget",
+    "b",
+  ]);
+  const directory = join(root, "runs");
+  process.env.MACHINES_RUN_STATUS_DIR = directory;
+  t.after(() => {
+    delete process.env.MACHINES_RUN_STATUS_DIR;
+  });
+  const daemon = await startDaemon({
+    stateDir: join(root, "state"),
+    sources: [source],
+    intervalMs: 30,
+  });
+  t.after(() => daemon.close());
+  const records = async () =>
+    Promise.all(
+      (await readdir(directory).catch(() => []))
+        .filter((name) => !name.startsWith(".") && name.endsWith(".json"))
+        .map(async (name) =>
+          JSON.parse(await readFile(join(directory, name), "utf8")),
+        ),
+    );
+  const published = await until(records, (list) =>
+    list.length === 2 && list.every((record) => record.status === "waiting"),
+  );
+  assert.deepEqual(
+    published
+      .map((record) => [record.label, record.machine, record.answeredBy])
+      .sort(),
+    [
+      ["a: Fix the widget", "review", "host"],
+      ["b", "review", "host"],
+    ],
+  );
 });

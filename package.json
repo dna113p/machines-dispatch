@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts",
+    "test": "node --import ./tests/environment.ts --test tests/*.test.ts",
     "check": "npm run typecheck && npm test",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
@@ -37,7 +37,7 @@
     "test:tk": "node --test tests/tk-upstream.integration.ts"
   },
   "dependencies": {
-    "@dna113p/machines": "^0.3.0",
+    "@dna113p/machines": "^0.3.1",
     "yaml": "^2.8.1",
     "valibot": "^1.4.2"
   },
