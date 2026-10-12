@@ -77,7 +77,11 @@ test("explicit --state-dir bypasses default-directory ambiguity", async (t) => {
   const result = await exec(process.execPath, [cli, "status", "--state-dir", stateDir, "--json"], {
     env: { ...process.env, XDG_STATE_HOME: root },
   });
-  assert.deepEqual(JSON.parse(result.stdout), { sources: [], attempts: [] });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    sources: [],
+    attempts: [],
+    update: { package: "@dna113p/machines", mode: "off", state: "off" },
+  });
 });
 
 test("a dangling legacy alias does not silently create a second namespace", async (t) => {

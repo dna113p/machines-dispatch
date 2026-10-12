@@ -11,19 +11,26 @@ The daemon supports Linux and Node 24 or newer.
 
 ## Build from source
 
-This checkout depends on the new Machines 0.3 host interface. Until that Machines
-version is published, bootstrap against a local Machines checkout:
+This checkout depends on the Machines 0.3 host interface, which is published on
+npm:
 
 ```sh
-node scripts/install-local.mjs ../machines
+npm install
 npm run check
 npm run build
 node dist/src/cli.js help
 ```
 
-The bootstrap script builds and installs a packed Machines package without saving
-machine-specific paths in package metadata. After Machines 0.3 is available on
-npm, ordinary `npm install` works. Neither package is published by these commands.
+To run against an unreleased Machines checkout instead, replace the installed
+copy with a local build:
+
+```sh
+node scripts/install-local.mjs ../machines
+```
+
+The script builds and installs a packed Machines package without saving
+machine-specific paths in package metadata. Neither package is published by
+these commands.
 
 ## Register a ticket source
 
@@ -82,6 +89,7 @@ machines-dispatch logs ATTEMPT_ID
 machines-dispatch respond ATTEMPT_ID REQUEST_ID approve
 machines-dispatch cancel ATTEMPT_ID
 machines-dispatch retry ATTEMPT_ID
+machines-dispatch update
 machines-dispatch stop
 ```
 
@@ -101,6 +109,52 @@ Machine-authored summaries are written as supplied.
 Closing a client does not stop runs. Stopping the daemon interrupts its runs and
 terminates their ordinary owned subprocesses. Deliberately detached or otherwise
 uncooperative processes retain Machines' existing lifecycle limitations.
+
+## Updates
+
+The daemon runs every Machine with its own installed copy of `@dna113p/machines`.
+When it starts, and every 30 minutes after, it asks npm (`npm view`, with your npm
+configuration and registry) for the newest stable release inside the version range
+in this package's `dependencies`. The copy is current when it has that version and
+npm installed it from a registry. A local build, such as the tarball
+`scripts/install-local.mjs` installs, is never current, even with the same version
+number. Machines Dispatch itself is not on npm; its own updates are not covered.
+
+One named export in the configuration file selects the mode:
+
+```ts
+export const update = "install";
+```
+
+- `"check"`, the default: report a newer release in `status`, in the `update`
+  command, and once in the daemon's output. Nothing is installed.
+- `"install"`: also install it and restart, as described below.
+- `"off"`: check nothing.
+
+`machines-dispatch update` checks now and prints the update state, which `status`
+also shows under `update`. `machines-dispatch update --install` installs the
+update it finds even in `"check"` mode; in `"off"` mode it answers that updates
+are off. A failed check or install is recorded in that state, never stops work,
+and is tried again at a later check. That holds for `update --install` too: the
+request stands for the version it found, and never extends to a later release.
+
+Installing waits until the daemon is idle: no attempt is starting, running, or
+waiting for a Human, and no result is still being written back. It then holds new
+admissions, runs `npm install` for that exact version beside the copy in use, and
+restarts in place with the same command line and process ID, so a service manager,
+a foreground `daemon`, and a detached `start` all continue unchanged. If the
+install fails, or leaves anything but that release, the daemon does not restart and
+carries on with the copy it has loaded. A release that is on disk but not yet
+loaded, after such a failure or an `npm install` by hand, still counts as an
+available update until the daemon restarts. In-place restart needs
+`process.execve`; without it `"install"` acts as `"check"` and the update state
+says so.
+
+`"install"` replaces a local build with the published release: use `"check"` or
+`"off"` while testing an unreleased Machines checkout. It also means newly
+published Machines code runs unattended, with the daemon's access, as soon as the
+daemon is idle. A daemon started with `startDaemon({ sources })` checks nothing
+unless its `update` option asks.
 
 ## Tickets and eligibility
 
