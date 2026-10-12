@@ -177,11 +177,12 @@ export function tk(options: TkOptions): WorkSource {
           `${ticket.id}: no Machine selected and no default configured`,
         );
       const machine = v.parse(nonempty, selected);
+      const title = /^#\s+(.+)$/m.exec(ticket.body)?.[1] ?? ticket.id;
       const input = v.parse(jsonValue, {
         ticket: {
           id: ticket.id,
           source: options.id,
-          title: /^#\s+(.+)$/m.exec(ticket.body)?.[1] ?? ticket.id,
+          title,
           body: ticket.body,
           metadata: ticket.data,
         },
@@ -195,6 +196,7 @@ export function tk(options: TkOptions): WorkSource {
         cwd,
         machine,
         input,
+        label: title === ticket.id ? ticket.id : `${ticket.id}: ${title}`,
         ...(home === undefined ? {} : { home }),
         ...(agents === undefined ? {} : { agents }),
       };

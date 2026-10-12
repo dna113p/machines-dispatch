@@ -525,7 +525,9 @@ test("a failed check is reported and work continues", async (t) => {
     [
       "spawn npm ENOENT",
       "npm printed an unreadable version list",
-      `npm lists no stable ${name} version matching ^0.3.0`,
+      `npm lists no stable ${name} version matching ${
+        JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).dependencies[name]
+      }`,
     ],
   );
   // The next check succeeds and clears the failure.

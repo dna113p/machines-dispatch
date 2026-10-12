@@ -196,6 +196,9 @@ export class Engine {
     try {
       const host = await startMachineHost({
         ...attempt.launch,
+        // Where run status is published, each attempt's run is too, and says what it is for.
+        publishRunStatus: true,
+        label: attempt.launch.label ?? attempt.item.label,
         signal: controller.signal,
         onState: (state) => {
           if (!active(this.store.get(attempt.id).status)) return;
