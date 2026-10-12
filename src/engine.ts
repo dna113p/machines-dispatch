@@ -27,6 +27,10 @@ export class Engine {
   private readonly nextDelivery = new Map<string, number>();
   private timer?: NodeJS.Timeout;
   private closed = false;
+  private admitting = 0;
+  private held = false;
+  /** Called at the end of every poll. */
+  onPoll?: () => void;
   private readonly intervalMs: number;
   constructor(
     store: Store,
@@ -77,6 +81,28 @@ export class Engine {
         this.deliver(attempt).finally(() => this.delivering.delete(attempt.id)),
       );
     }
+    this.onPoll?.();
+  }
+  /** Nothing is running, waiting for a Human, being admitted, or being written back. */
+  idle(): boolean {
+    return (
+      !this.closed &&
+      !this.admitting &&
+      !this.delivering.size &&
+      !this.controllers.size &&
+      !this.store
+        .list()
+        .some((a) => active(a.status) || a.delivery === "pending")
+    );
+  }
+  /** When idle, refuses new admissions until `release`. Returns whether it did. */
+  hold(): boolean {
+    if (!this.idle()) return false;
+    this.held = true;
+    return true;
+  }
+  release(): void {
+    this.held = false;
   }
   sourcesStatus(): SourceStatus[] {
     return structuredClone([...this.statuses.values()]);
@@ -108,6 +134,20 @@ export class Engine {
     source: WorkSource,
     item: WorkItem,
     retry = false,
+  ): Promise<Attempt | undefined> {
+    if (this.held) return;
+    // A hold is granted only while no admission is on its way to an attempt.
+    this.admitting++;
+    try {
+      return await this.launch(source, item, retry);
+    } finally {
+      this.admitting--;
+    }
+  }
+  private async launch(
+    source: WorkSource,
+    item: WorkItem,
+    retry: boolean,
   ): Promise<Attempt | undefined> {
     if (this.closed || (!retry && this.store.latest(source.id, item.key)))
       return;
@@ -271,7 +311,12 @@ export class Engine {
         "Ticket is no longer eligible; inspect its status and blockers",
       );
     const attempt = await this.admit(source, item, true);
-    if (!attempt) throw new Error("Ticket changed or already has active work");
+    if (!attempt)
+      throw new Error(
+        this.held
+          ? "The daemon is installing an update; retry after it restarts"
+          : "Ticket changed or already has active work",
+      );
     return attempt;
   }
   async close(): Promise<void> {

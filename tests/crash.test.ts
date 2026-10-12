@@ -24,7 +24,7 @@ wait:human("Wait",{submitted:"done"}),done:final()}});`,
   const config = join(root, "config.ts");
   await writeFile(
     config,
-    'export default ({tk})=>[tk({id:"s",cwd:".",home:"./home"})];',
+    'export const update="off";export default ({tk})=>[tk({id:"s",cwd:".",home:"./home"})];',
   );
   const children: ChildProcess[] = [];
   t.after(async () => {
@@ -107,7 +107,10 @@ test("detached CLI start is idempotent and leaves the daemon owned by its state 
   const root = await workspace(t);
   const stateDir = join(root, "state");
   const config = join(root, "config.ts");
-  await writeFile(config, 'export default ({tk})=>[tk({id:"s",cwd:"."})];');
+  await writeFile(
+    config,
+    'export const update="off";export default ({tk})=>[tk({id:"s",cwd:"."})];',
+  );
   const run = async (...args: string[]) =>
     JSON.parse(
       (

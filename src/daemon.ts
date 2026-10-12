@@ -5,7 +5,8 @@ import { join } from "node:path";
 import * as v from "valibot";
 import { Engine } from "./engine.ts";
 import { Store } from "./store.ts";
-import { loadConfiguration } from "./config.ts";
+import { loadConfiguration, loadUpdateMode } from "./config.ts";
+import { Updater, type UpdateHooks, type UpdateMode } from "./update.ts";
 import type { WorkSource } from "./contracts.ts";
 import { errorMessage, nonempty } from "./validation.ts";
 
@@ -14,10 +15,18 @@ export interface DaemonOptions {
   config?: string;
   sources?: readonly WorkSource[];
   intervalMs?: number;
+  /**
+   * Defaults to the configuration's `update` export, else "check".
+   * With `sources` it defaults to "off".
+   */
+  update?: UpdateMode;
+  /** Replaces the updater's npm commands, restart, and schedule. */
+  updateHooks?: UpdateHooks;
 }
 export interface Daemon {
   close(): Promise<void>;
   readonly engine: Engine;
+  readonly updater: Updater;
 }
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   if (process.platform !== "linux")
@@ -40,10 +49,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   let store: Store | undefined;
   let engine: Engine | undefined;
   let server: Server | undefined;
+  let updater: Updater | undefined;
   let closing: Promise<void> | undefined;
+  let stopped = false;
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        updater?.close();
         await engine?.close();
         if (server?.listening)
           await new Promise<void>((resolve, reject) =>
@@ -55,6 +67,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         lock.close();
       }
     })());
+  // A stop requested by anyone but the updater must not end in a restart.
+  const stop = (): Promise<void> => {
+    stopped = true;
+    return close();
+  };
   try {
     const sources =
       options.sources ??
@@ -63,6 +80,17 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     store = new Store(join(directory, "executions.sqlite"));
     engine = new Engine(store, sources, options.intervalMs);
     const runtime = engine;
+    const updates = (updater = new Updater({
+      ...options.updateHooks,
+      mode:
+        options.update ??
+        (options.sources || !options.config
+          ? "off"
+          : ((await loadUpdateMode(options.config)) ?? "check")),
+      engine,
+      close,
+      stopped: () => stopped,
+    }));
     server = createServer(async (req, res) => {
       const reply = (code: number, value: unknown) => {
         res.writeHead(code, { "content-type": "application/json" });
@@ -104,6 +132,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
                 : {
                     sources: runtime.sourcesStatus(),
                     attempts: runtime.store.list(),
+                    update: updates.status(),
                   },
             );
             break;
@@ -131,10 +160,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
             reply(200, { accepted: true });
             break;
           }
+          case "/update": {
+            const { install } = v.parse(
+              v.strictObject({ install: v.optional(v.boolean()) }),
+              body,
+            );
+            reply(200, await updates.check(install));
+            break;
+          }
           case "/stop":
             reply(200, { stopping: true });
             setImmediate(() => {
-              void close().catch((cause) =>
+              void stop().catch((cause) =>
                 process.emitWarning(errorMessage(cause)),
               );
             });
@@ -156,7 +193,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     });
     await chmod(socket, 0o600);
     engine.start();
-    return { engine, close };
+    updates.start();
+    return { engine, updater: updates, close: stop };
   } catch (cause) {
     await close();
     throw cause;

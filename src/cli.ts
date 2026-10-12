@@ -17,16 +17,19 @@ const usage = `machines-dispatch <command> [--state-dir directory] [--json]
   logs <attempt>             Show persisted observations
   respond <attempt> <request> <response>
   cancel <attempt>           Cancel active execution
-  retry <attempt>            Deliberately retry eligible work`;
+  retry <attempt>            Deliberately retry eligible work
+  update [--install]         Check for a newer Machines; install it when idle`;
 async function main(): Promise<void> {
   const positional: string[] = [];
   let stateDir: string | undefined;
   let config: string | undefined;
   let json = false;
+  let install = false;
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--json") json = true;
+    else if (arg === "--install") install = true;
     else if (arg === "--config" || arg === "--state-dir") {
       const value = args[++index];
       if (!value) throw new Error(`Missing ${arg} value`);
@@ -41,6 +44,7 @@ async function main(): Promise<void> {
     console.log(usage);
     return;
   }
+  if (install && command !== "update") throw new Error(usage);
   stateDir ??= defaultStateDir();
   if (command === "daemon") {
     if (!config || rest.length) throw new Error(usage);
@@ -108,6 +112,7 @@ async function main(): Promise<void> {
     cancel: 1,
     retry: 1,
     respond: 3,
+    update: 0,
   };
   if (
     command === "status"
@@ -120,7 +125,9 @@ async function main(): Promise<void> {
       ? { id: rest[0], requestId: rest[1], response: rest[2] }
       : rest[0]
         ? { id: rest[0] }
-        : {};
+        : install
+          ? { install: true }
+          : {};
   print(await request(stateDir, command, payload));
 }
 void main().catch((cause) => {
