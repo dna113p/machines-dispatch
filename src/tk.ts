@@ -46,6 +46,7 @@ interface Ticket {
   deps: string[];
   request: string;
   fingerprint: string;
+  contentHash: string;
 }
 const reference = v.object({ id: nonempty, fingerprint: nonempty });
 const common = { summary: v.string() };
@@ -141,8 +142,13 @@ export function tk(options: TkOptions): WorkSource {
     return false;
   }
   function item(ticket: Ticket): WorkItem {
+    const resume = v.is(record, ticket.data.input) && ticket.data.input.resume === true;
+    const requestKey = `${ticket.id}:${ticket.request}`;
     return {
-      key: `${ticket.id}:${ticket.request}`,
+      key: `${requestKey}${resume ? `:${ticket.contentHash}` : ""}`,
+      // Running a content revision also consumes the ordinary request. Removing
+      // resume later must not expose that request as unattempted work.
+      ...(resume ? { supersedes: [requestKey] } : {}),
       label: ticket.id,
       ref: { id: ticket.id, fingerprint: ticket.fingerprint },
     };
@@ -248,7 +254,10 @@ export function tk(options: TkOptions): WorkSource {
             ticket.doc.delete("auto-machines-request");
           }
         }
-        const text = `---\n${ticket.doc.toString()}---\n${ticket.body.trimEnd()}\n\n## Machines Dispatch\n\n${marker}\n${summary}\n`;
+        // One line after each marker makes the daemon's text distinguishable
+        // from an owner's reply appended below it, even for multiline outcomes.
+        const summaryLine = summary.replace(/\s+/g, " ").trim();
+        const text = `---\n${ticket.doc.toString()}---\n${ticket.body.trimEnd()}\n\n## Machines Dispatch\n\n${marker}\n${summaryLine}\n`;
         await replace(ticket, text);
       });
     },
@@ -314,7 +323,25 @@ async function readTicket(path: string): Promise<Ticket> {
     deps,
     request,
     fingerprint,
+    contentHash: contentHash(data, body),
   };
+}
+function contentHash(data: Record<string, unknown>, body: string): string {
+  // Routing owns these fields. Its request ID already has a separate key component.
+  const metadata = { ...data };
+  for (const field of [
+    "status", "machine", "input", "agents",
+    "machines-dispatch-request", "auto-machines-request",
+  ]) delete metadata[field];
+  // Remove marked receipts and their separators, not replies beneath them.
+  // Unmarked headings and any lines after the one-line summary remain content.
+  const content = body.replace(
+    /(?:\r?\n)*^(?:## (?:Machines Dispatch|Auto Machines)\r?\n(?:[ \t]*\r?\n)*)?<!-- (?:machines-dispatch|auto-machines):[^\r\n]+ -->\r?\n[^\r\n]*(?:\r?\n|$)/gm,
+    "",
+  ).trimEnd();
+  return createHash("sha256")
+    .update(JSON.stringify({ data: metadata, body: content }))
+    .digest("hex");
 }
 async function replace(ticket: Ticket, text: string): Promise<void> {
   const temp = `${ticket.path}.${crypto.randomUUID()}.tmp`;

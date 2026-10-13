@@ -200,7 +200,8 @@ Missing dependencies, cycles, malformed tickets, and invalid selections are
 reported by `sources`. Other eligible work continues. Machine preparation checks
 Agent bindings; each definition validates its own input shape before Operations.
 Validation/import failures that happen before admission are reconsidered on a
-later poll. A failed hosted attempt requires deliberate retry after fixing it.
+later poll. A failed hosted attempt requires deliberate retry after fixing it,
+unless a tk edit creates new work under the resume rule below.
 
 Both adapters supply the same input envelope:
 
@@ -276,7 +277,8 @@ Define the Machine's top-level XState `output` as one of these JSON objects:
 ```
 
 `complete` records the summary and closes the ticket. `hold` records findings and
-leaves it open without launching it again locally. For tk, `route` appends findings,
+leaves it open without launching it again locally until retry or a qualifying tk
+resume edit. For tk, `route` appends findings,
 updates its Machine and optional input/agents, and creates a new execution request.
 GitHub supports only `complete` and `hold`; `route` produces a visible writeback
 conflict instead of inventing tracker metadata or silently ignoring routing.
@@ -287,11 +289,35 @@ closes the ticket. A Machine's final state alone is not a ticket outcome.
 
 The tk adapter manages `machines-dispatch-request` for routed work and puts attempt
 markers in result notes. Replaying a writeback does not append duplicate notes.
-Ordinary edits and polling do not rerun an already-recorded request. Use `retry`
-for deliberate re-execution of an eligible ticket, including a reopened ticket.
+Ordinary edits and polling do not rerun an already-recorded request. For tk,
+setting frontmatter `input.resume: true` opts into automatic resume: editing the
+ticket's content creates a new execution key, so a parked ticket launches again
+without `retry`. The Machine receives `resume: true` in `input.input`. Unchanged
+content does not launch again, and the daemon never sets `resume` itself.
+Removing `input.resume` or setting it to `false` keeps an attempted request parked,
+even if it first ran with resume enabled. Explicit `retry` still works.
+
+Body edits count even below a daemon note: owners can append answers at the end
+of the ticket. Only the daemon's marked `## Machines Dispatch` (or legacy
+`## Auto Machines`) heading, each attempt marker, and its following summary line
+are excluded from the content comparison. Writeback flattens multiline summaries
+onto that single line. Unmarked headings and later lines remain content. Frontmatter
+fields the daemon manages (`status`, `machine`, `input`, `agents`,
+`machines-dispatch-request`, and `auto-machines-request`) are also excluded.
+Changing only those fields does not count as a content edit, although enabling
+`input.resume: true` changes the key from its ordinary form. Other frontmatter
+fields do count. Writeback alone therefore does not trigger another resume.
+
+The resume rule also applies after failed, cancelled, or interrupted attempts;
+restoring content whose key was already attempted does not launch it again.
+An eligible ticket already carrying `input.resume: true` gets a new key once
+when upgrading from a version without this rule. Use `retry` for deliberate
+re-execution of an eligible ticket, including an unchanged or reopened ticket.
 
 Ticket changes detected before writeback produce a visible conflict instead of
-replacing newer content. Inspect the local result and reconcile the ticket; do
+replacing newer content. A qualifying content edit with `input.resume: true`
+can launch another attempt once that conflict is recorded; the earlier result
+stays local. Inspect the local result and reconcile the ticket; do
 not rerun a completed Machine merely to publish its old result. Transient I/O
 failures retry automatically, independently of execution. Brief metadata writes
 serialize within the adapter; Machine runs remain parallel. Independent editors
@@ -341,6 +367,10 @@ Each item has a stable execution `key`, a stable ticket identifier in `label`, a
 an opaque JSON `ref`. A new execution request needs a new key; changing unrelated
 metadata must not generate one. `prepare` must not execute workflow effects.
 Only exact discovered Machine names are accepted in its launch request.
+
+An item may also declare `supersedes`, additional execution keys consumed by its
+attempt within the same source. Tk uses this to keep the ordinary request consumed
+when resume is later disabled. Explicit retries bypass this deduplication.
 
 `apply` must tolerate retries with the same `attemptId`. Throw `ReportConflict`
 for invalid output or changes requiring intervention; ordinary errors retry.

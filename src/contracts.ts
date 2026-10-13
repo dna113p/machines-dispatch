@@ -8,6 +8,8 @@ export type { JsonValue } from "@dna113p/machines";
 
 export interface WorkItem {
   readonly key: string;
+  /** Additional keys consumed by this attempt. Explicit retries bypass them. */
+  readonly supersedes?: readonly string[];
   readonly label: string;
   readonly ref: JsonValue;
 }
