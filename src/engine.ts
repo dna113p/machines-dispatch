@@ -149,7 +149,7 @@ export class Engine {
     item: WorkItem,
     retry: boolean,
   ): Promise<Attempt | undefined> {
-    if (this.closed || (!retry && this.store.latest(source.id, item.key)))
+    if (this.closed || (!retry && this.store.attempted(source.id, item.key)))
       return;
     // A routed request must not overlap an older attempt or its pending writeback.
     if (

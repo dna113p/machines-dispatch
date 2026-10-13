@@ -156,6 +156,48 @@ test("legacy tk writeback markers prevent replay after the rename", async (t) =>
   assert.equal(await readTicket(root, "a"), applied);
 });
 
+test("resume hashes keep unmarked headings and replies below legacy writeback", async (t) => {
+  const root = await workspace(t);
+  await ticket(root, "a", "input:\n  resume: true\n");
+  const source = tk({ id: "s", cwd: root, defaultMachine: "work" });
+  const first = (await source.scan()).items[0]!;
+  const authored = (await readTicket(root, "a")) + "\n## Machines Dispatch\n\nOwner's requirements\n";
+  await writeFile(join(root, ".tickets/a.md"), authored);
+  const edited = (await source.scan()).items[0]!;
+  assert.notEqual(edited.key, first.key);
+  await writeFile(join(root, ".tickets/a.md"), authored +
+    "\n## Auto Machines\n\n<!-- auto-machines:old-result -->\nFindings\n");
+  const reported = (await source.scan()).items[0]!;
+  assert.equal(reported.key, edited.key);
+  assert.notDeepEqual(reported.ref, edited.ref);
+  await writeFile(join(root, ".tickets/a.md"), (await readTicket(root, "a")) +
+    "\n## Next step\nAnswer needed\n");
+  const replied = (await source.scan()).items[0]!;
+  assert.notEqual(replied.key, reported.key);
+  await source.apply({ attemptId: "current-result", item: replied, status: "completed", result: {
+    state: "done", output: { action: "hold", summary: "Still waiting\n\n## Question\nWhich option?" },
+  } });
+  assert.equal((await source.scan()).items[0]!.key, replied.key);
+});
+
+test("resume ignores daemon-managed fields while preserving full conflict checks", async (t) => {
+  const root = await workspace(t);
+  await ticket(root, "a", "machine: research\ninput:\n  resume: true\n");
+  const source = tk({ id: "s", cwd: root });
+  const first = (await source.scan()).items[0]!;
+  await ticket(root, "a", "machine: implement\ninput:\n  resume: true\n  task: changed\nagents: { worker: codex }\n");
+  await writeFile(join(root, ".tickets/a.md"),
+    (await readTicket(root, "a")).replace("status: open", "status: in_progress"));
+  const edited = (await source.scan()).items[0]!;
+  assert.equal(edited.key, first.key);
+  assert.notDeepEqual(edited.ref, first.ref);
+  assert.equal(await source.prepare(first), undefined);
+  await assert.rejects(source.apply({ attemptId: "stale", item: first, status: "completed", result: {
+    state: "done", output: { action: "hold", summary: "Stale result" },
+  } }), ReportConflict);
+  assert.equal((await source.prepare(edited))?.machine, "implement");
+});
+
 test("conflicting legacy and canonical request IDs are not scheduled", async (t) => {
   const root = await workspace(t);
   await ticket(root, "a", "auto-machines-request: one\nmachines-dispatch-request: two\n");

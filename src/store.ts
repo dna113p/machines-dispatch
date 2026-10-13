@@ -34,6 +34,11 @@ export class Store {
       .get(source, key);
     return row ? (JSON.parse(String(row.data)) as Attempt) : undefined;
   }
+  attempted(source: string, key: string): boolean {
+    return !!this.latest(source, key) || this.list().some(
+      (attempt) => attempt.source === source && attempt.item.supersedes?.includes(key),
+    );
+  }
   create(
     source: string,
     item: WorkItem,
@@ -42,6 +47,7 @@ export class Store {
   ): Attempt | undefined {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (!retry && this.attempted(source, item.key)) return undefined;
       if (
         this.list().some(
           (attempt) =>
