@@ -336,6 +336,6 @@ export class Engine {
         });
       controller.abort();
     }
-    while (this.jobs.size) await Promise.allSettled([...this.jobs]);
+    while (this.jobs.size) await Promise.allSettled(this.jobs);
   }
 }
