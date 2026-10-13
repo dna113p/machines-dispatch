@@ -30,7 +30,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/environment.ts --test tests/*.test.ts",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "lint": "oxlint --deny-warnings",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
     "smoke:package": "node scripts/smoke-package.mjs",
@@ -38,11 +39,12 @@
   },
   "dependencies": {
     "@dna113p/machines": "^0.3.1",
-    "yaml": "^2.8.1",
-    "valibot": "^1.4.2"
+    "valibot": "^1.4.2",
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "oxlint": "^1.87.0",
     "typescript": "^7.0.2"
   }
 }

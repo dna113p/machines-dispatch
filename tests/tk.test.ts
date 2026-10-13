@@ -315,7 +315,10 @@ test("invalid allowedMachines values are rejected at registration", async (t) =>
     ["padded name", [" research"]],
     ["non-string name", ["research", 1]],
     ["sparse array", Array(1)],
+    // Sparse arrays are the input under test.
+    // oxlint-disable-next-line no-sparse-arrays
     ["sparse entry", ["research", , "build"]],
+    // oxlint-disable-next-line no-sparse-arrays
     ["trailing sparse entry", ["research", ,]],
     ["duplicate names", ["research", "build", "research"]],
     ["default outside the list", ["build"], "research"],
