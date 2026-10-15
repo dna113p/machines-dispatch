@@ -43,6 +43,7 @@ export type AttemptStatus =
   | "running"
   | "waiting"
   | "sleeping"
+  | "continued-outside"
   | WorkReport["status"];
 export interface Attempt {
   id: string;
@@ -58,11 +59,13 @@ export interface Attempt {
   cutOff?: true;
   /** Automatic restart continuations already claimed for this attempt. */
   continued?: number;
+  runStatusDir?: string;
   sleeping?: MachineHostResult["sleeping"];
   wakeError?: string;
   cannotSleep?: string;
   state?: MachineHostResult["state"];
   result?: MachineHostResult;
+  note?: string;
   error?: string;
   delivery: "none" | "pending" | "applied" | "conflict";
   deliveryError?: string;
