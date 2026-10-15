@@ -174,7 +174,8 @@ test("a sleeping attempt whose run record was removed is marked run record not f
   publishTo(t, runs);
   await definition(root, "work", "complete", true);
   const { engine, runId, seen } = await setupEngine(t, root);
-  assert.equal(engine.idle(), false);
+  // Since org-37 a sleeping attempt no longer keeps the daemon busy.
+  assert.equal(engine.idle(), true);
   await rm(join(runs, `${runId}.json`));
   engine.poll();
   const marked = await until(seen, (value) => value.status !== "sleeping");
@@ -202,7 +203,8 @@ test("an unreadable run record leaves the attempt sleeping until it can be read"
   await delay(200);
   assert.equal(seen().status, "sleeping");
   assert.equal(seen().note, undefined);
-  assert.equal(engine.idle(), false);
+  // Since org-37 a sleeping attempt no longer keeps the daemon busy.
+  assert.equal(engine.idle(), true);
 
   // Readable again and finished by hand, it is noticed.
   await chmod(file, 0o644);
@@ -258,7 +260,8 @@ test("a directory that permits lookup but cannot be listed leaves the attempt sl
   await delay(200);
   assert.equal(seen().status, "sleeping");
   assert.equal(seen().note, undefined);
-  assert.equal(engine.idle(), false);
+  // Since org-37 a sleeping attempt no longer keeps the daemon busy.
+  assert.equal(engine.idle(), true);
 
   await chmod(runs, 0o700);
   engine.poll();
@@ -277,7 +280,8 @@ test("a malformed record is not mistaken for a missing record", async (t) => {
   await delay(200);
   assert.equal(seen().status, "sleeping");
   assert.equal(seen().note, undefined);
-  assert.equal(engine.idle(), false);
+  // Since org-37 a sleeping attempt no longer keeps the daemon busy.
+  assert.equal(engine.idle(), true);
 });
 
 test("an older sleeping attempt without a stored directory is not marked missing", async (t) => {
@@ -292,5 +296,6 @@ test("an older sleeping attempt without a stored directory is not marked missing
   await delay(200);
   assert.equal(seen().status, "sleeping");
   assert.equal(seen().note, undefined);
-  assert.equal(engine.idle(), false);
+  // Since org-37 a sleeping attempt no longer keeps the daemon busy.
+  assert.equal(engine.idle(), true);
 });

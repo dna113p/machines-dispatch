@@ -60,7 +60,48 @@ export class Engine {
     if (this.closed || this.timer)
       throw new Error("Engine already started or closed");
     this.timer = setInterval(() => this.poll(), this.intervalMs);
+    this.continueCutOff();
     this.poll();
+  }
+  private continueCutOff(): void {
+    const directory = runStatusDirectory();
+    const records = new Map(
+      (directory === undefined ? [] : readRunStatuses(directory)).map(
+        (record) => [record.id, record],
+      ),
+    );
+    for (const attempt of this.store.list()) {
+      if (!attempt.cutOff) continue;
+      const record = attempt.runId ? records.get(attempt.runId) : undefined;
+      if (
+        !attempt.continued &&
+        record &&
+        record.status !== "sleeping" &&
+        record.status !== "completed"
+      ) {
+        // Persist the claim before starting: another stop must not continue it twice.
+        const next = this.store.update(attempt.id, {
+          status: "running",
+          cutOff: undefined,
+          continued: 1,
+          error: undefined,
+        });
+        this.store.event(attempt.id, { type: "continued", runId: record.id });
+        const controller = new AbortController();
+        this.controllers.set(attempt.id, controller);
+        this.track(
+          this.execute(next, controller, { id: record.id, mode: "continue" }),
+        );
+      } else {
+        this.store.update(attempt.id, {
+          cutOff: undefined,
+          delivery: "pending",
+          error: attempt.continued
+            ? "Cut off again after one automatic continuation; not continued again. Inspect effects before retrying."
+            : attempt.error,
+        });
+      }
+    }
   }
   private track(job: Promise<void>): void {
     this.jobs.add(job);
@@ -93,6 +134,7 @@ export class Engine {
     this.onPoll?.();
   }
   private wake(): void {
+    if (this.held) return;
     const directory = runStatusDirectory();
     if (directory === undefined) return;
     const records = new Map(
@@ -120,7 +162,9 @@ export class Engine {
         continue;
       const controller = new AbortController();
       this.controllers.set(attempt.id, controller);
-      this.track(this.execute(attempt, controller, attempt.runId));
+      this.track(
+        this.execute(attempt, controller, { id: attempt.runId, mode: "wake" }),
+      );
     }
   }
   private reconcile(
@@ -174,7 +218,7 @@ export class Engine {
       return false;
     }
   }
-  /** Nothing is running, waiting, sleeping, being admitted, or being written back. */
+  /** Nothing is running, waiting, being admitted, recovered, or written back. */
   idle(): boolean {
     return (
       !this.closed &&
@@ -183,10 +227,15 @@ export class Engine {
       !this.controllers.size &&
       !this.store
         .list()
-        .some((a) => active(a.status) || a.delivery === "pending")
+        .some(
+          (a) =>
+            (active(a.status) && a.status !== "sleeping") ||
+            a.cutOff ||
+            a.delivery === "pending",
+        )
     );
   }
-  /** When idle, refuses new admissions until `release`. Returns whether it did. */
+  /** When idle, refuses admissions and wakes until `release`. Returns whether it did. */
   hold(): boolean {
     if (!this.idle()) return false;
     this.held = true;
@@ -294,16 +343,16 @@ export class Engine {
   private async execute(
     attempt: Attempt,
     controller: AbortController,
-    resume?: string,
+    run?: { id: string; mode: "wake" | "continue" },
   ): Promise<void> {
     let started = false;
     try {
-      const cannotSleep = resume === undefined ? this.sleepable() : undefined;
-      if (resume === undefined) this.store.update(attempt.id, { cannotSleep });
+      const cannotSleep = run === undefined ? this.sleepable() : undefined;
+      if (run === undefined) this.store.update(attempt.id, { cannotSleep });
       const host = await startMachineHost({
-        ...(resume === undefined
+        ...(run === undefined
           ? { ...attempt.launch, sleep: cannotSleep === undefined }
-          : { continue: resume, sleep: true }),
+          : { continue: run.id, sleep: true }),
         // Where run status is published, each attempt's run is too, and says what it is for.
         publishRunStatus: true,
         label: attempt.launch.label ?? attempt.item.label,
@@ -328,9 +377,9 @@ export class Engine {
         wakeError: undefined,
       });
       const status = this.store.get(attempt.id).status;
-      if (status === "starting" || (resume !== undefined && status === "sleeping"))
+      if (status === "starting" || (run?.mode === "wake" && status === "sleeping"))
         this.store.update(attempt.id, { status: "running" });
-      if (resume !== undefined) {
+      if (run?.mode === "wake") {
         this.nextWake.delete(attempt.id);
         this.store.event(attempt.id, { type: "woken", runId: host.id });
       }
@@ -359,7 +408,7 @@ export class Engine {
       }
     } catch (cause) {
       const current = this.store.get(attempt.id);
-      if (resume !== undefined && !started) {
+      if (run?.mode === "wake" && !started) {
         this.nextWake.set(attempt.id, Date.now() + this.intervalMs);
         if (current.status === "sleeping" && !this.closed) {
           const wakeError = errorMessage(cause);
@@ -367,6 +416,13 @@ export class Engine {
           if (current.wakeError !== wakeError)
             this.store.event(attempt.id, { type: "wake-failed", error: wakeError });
         }
+      } else if (run?.mode === "continue" && !started && active(current.status)) {
+        this.store.update(attempt.id, {
+          status: "interrupted",
+          error: `Could not continue after a restart: ${errorMessage(cause)}`,
+          human: undefined,
+          delivery: "pending",
+        });
       } else if (active(current.status))
         this.store.update(attempt.id, {
           status: "failed",
@@ -458,6 +514,7 @@ export class Engine {
     const previous = this.store.get(id);
     if (
       active(previous.status) ||
+      previous.cutOff ||
       this.controllers.has(id) ||
       previous.delivery === "pending"
     )
@@ -484,14 +541,15 @@ export class Engine {
     this.closed = true;
     clearInterval(this.timer);
     for (const [id, controller] of this.controllers) {
-      const status = this.store.get(id).status;
+      const { status, runId } = this.store.get(id);
       // A wake that has not started still has its sleeping checkpoint.
       if (active(status) && status !== "sleeping")
         this.store.update(id, {
           status: "interrupted",
           human: undefined,
           error: "Daemon stopped",
-          delivery: "pending",
+          delivery: runId ? "none" : "pending",
+          cutOff: runId ? true : undefined,
         });
       controller.abort();
     }

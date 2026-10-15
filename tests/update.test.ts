@@ -386,6 +386,52 @@ review:human("Approve?",{submitted:"done"},{choices:["yes","no"]}),done:final()}
   );
 });
 
+test("a sleeping attempt does not defer the install", async (t) => {
+  const fake = await fixture(t, "0.3.0", registry("0.3.0"));
+  fake.listed = '"0.3.0"';
+  const runs = join(fake.root, "runs");
+  process.env.MACHINES_RUN_STATUS_DIR = runs;
+  t.after(() => {
+    process.env.MACHINES_RUN_STATUS_DIR = "off";
+  });
+  await definition(fake.root, "work", "complete", true);
+  await ticket(fake.root, "a", "machine: work\n");
+  const daemon = await startDaemon({
+    stateDir: fake.stateDir,
+    sources: [tk({ id: "s", cwd: fake.root, home: join(fake.root, "home") })],
+    intervalMs: 20,
+    update: "install",
+    updateHooks: fake.hooks,
+  });
+  t.after(() => daemon.close());
+  await state(daemon, "current");
+  const sleeping = await until(
+    () => daemon.engine.store.list()[0],
+    (a) => a?.status === "sleeping",
+  );
+  // The update appears only once the attempt sleeps, so the install cannot precede it.
+  fake.listed = '"0.3.1"';
+  await request(fake.stateDir, "update");
+  await until(
+    () => fake.restarts,
+    (restarts) => restarts === 1,
+  );
+  assert.deepEqual(
+    fake.commands("install").map((call) => call.at(-1)),
+    [`${name}@0.3.1`],
+  );
+  const journal = new Store(join(fake.stateDir, "executions.sqlite"));
+  t.after(() => journal.close());
+  assert.deepEqual(
+    journal.list().map((a) => [a.id, a.status, a.delivery]),
+    [[sleeping!.id, "sleeping", "none"]],
+  );
+  const run = JSON.parse(
+    await readFile(join(runs, `${sleeping!.runId}.json`), "utf8"),
+  );
+  assert.equal(run.status, "sleeping");
+});
+
 test("no attempt is admitted between the hold and the restart", async (t) => {
   const fake = await fixture(t, "0.3.0", registry("0.3.0"));
   fake.listed = '"0.3.1"';
