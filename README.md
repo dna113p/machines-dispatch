@@ -139,12 +139,20 @@ When publication is off or the directory cannot be written, runs stay in-process
 `waiting` and is answered with `machines-dispatch respond` as before.
 
 A sleeping attempt counts as active: it prevents overlapping work on that ticket,
-blocks `retry`, and keeps the daemon from being idle for updates. A restart leaves
-it sleeping and writes nothing back. `cancel` writes a cancelled result to the
-ticket, but its Machines run stays sleeping and Dispatch will never wake that
-cancelled attempt. A person can run `machine continue <run-id>` outside Dispatch.
-Automatic waking is deferred to org-38; answering a sleeping request or continuing
-its run manually currently leaves the Dispatch attempt sleeping and the ticket open.
+blocks `retry`, and keeps the daemon from being idle for updates. A restart
+preserves the sleeping attempt instead of interrupting it. `cancel` writes a
+cancelled result to the ticket, but its Machines run stays sleeping and Dispatch
+will never wake that cancelled attempt. A person can run `machine continue <run-id>`
+outside Dispatch.
+Continuing its run manually currently leaves the Dispatch attempt sleeping and
+the ticket open; reconciling those runs is deferred to org-39.
+
+On each poll, Dispatch continues its own sleeping runs once they are answered or
+due, keeping the same attempt and run id. A repeating wait sleeps again as that
+attempt; a finished run is written back to the ticket as usual. A failed wake
+leaves the attempt sleeping, shows the error in `wakeError` in `status`, and is
+retried no sooner than the next poll interval. The error is logged only when it
+changes. Use `cancel` to stop retrying a failed wake.
 
 ## Updates
 

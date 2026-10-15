@@ -1,7 +1,10 @@
 import { accessSync, constants, mkdirSync } from "node:fs";
 import { listMachines } from "@dna113p/machines/launcher";
 import { startMachineHost, type MachineHostRun } from "@dna113p/machines/host";
-import { runStatusDirectory } from "@dna113p/machines/run-status";
+import {
+  readRunStatuses,
+  runStatusDirectory,
+} from "@dna113p/machines/run-status";
 import {
   active,
   ReportConflict,
@@ -27,6 +30,7 @@ export class Engine {
   private readonly scanning = new Set<string>();
   private readonly delivering = new Set<string>();
   private readonly nextDelivery = new Map<string, number>();
+  private readonly nextWake = new Map<string, number>();
   private timer?: NodeJS.Timeout;
   private closed = false;
   private admitting = 0;
@@ -83,7 +87,38 @@ export class Engine {
         this.deliver(attempt).finally(() => this.delivering.delete(attempt.id)),
       );
     }
+    this.wake();
     this.onPoll?.();
+  }
+  private wake(): void {
+    const directory = runStatusDirectory();
+    if (directory === undefined) return;
+    const records = new Map(
+      readRunStatuses(directory).map((record) => [record.id, record]),
+    );
+    const now = Date.now();
+    for (const attempt of this.store.list()) {
+      if (
+        attempt.status !== "sleeping" ||
+        !attempt.runId ||
+        this.controllers.has(attempt.id) ||
+        (this.nextWake.get(attempt.id) ?? 0) > now
+      )
+        continue;
+      const record = records.get(attempt.runId);
+      if (
+        record?.status !== "sleeping" ||
+        record.continuedBy !== "host" ||
+        !(
+          record.human?.answer !== undefined ||
+          (record.due !== undefined && Date.parse(record.due) <= now)
+        )
+      )
+        continue;
+      const controller = new AbortController();
+      this.controllers.set(attempt.id, controller);
+      this.track(this.execute(attempt, controller, attempt.runId));
+    }
   }
   /** Nothing is running, waiting, sleeping, being admitted, or being written back. */
   idle(): boolean {
@@ -205,15 +240,18 @@ export class Engine {
   private async execute(
     attempt: Attempt,
     controller: AbortController,
+    resume?: string,
   ): Promise<void> {
+    let started = false;
     try {
-      const cannotSleep = this.sleepable();
-      this.store.update(attempt.id, { cannotSleep });
+      const cannotSleep = resume === undefined ? this.sleepable() : undefined;
+      if (resume === undefined) this.store.update(attempt.id, { cannotSleep });
       const host = await startMachineHost({
-        ...attempt.launch,
+        ...(resume === undefined
+          ? { ...attempt.launch, sleep: cannotSleep === undefined }
+          : { continue: resume, sleep: true }),
         // Where run status is published, each attempt's run is too, and says what it is for.
         publishRunStatus: true,
-        sleep: cannotSleep === undefined,
         label: attempt.launch.label ?? attempt.item.label,
         signal: controller.signal,
         onState: (state) => {
@@ -228,10 +266,20 @@ export class Engine {
           this.store.event(attempt.id, { type: "human", human });
         },
       });
+      started = true;
       this.hosts.set(attempt.id, host);
-      this.store.update(attempt.id, { runId: host.id });
-      if (this.store.get(attempt.id).status === "starting")
+      this.store.update(attempt.id, {
+        runId: host.id,
+        sleeping: undefined,
+        wakeError: undefined,
+      });
+      const status = this.store.get(attempt.id).status;
+      if (status === "starting" || (resume !== undefined && status === "sleeping"))
         this.store.update(attempt.id, { status: "running" });
+      if (resume !== undefined) {
+        this.nextWake.delete(attempt.id);
+        this.store.event(attempt.id, { type: "woken", runId: host.id });
+      }
       const result = await host.result;
       if (active(this.store.get(attempt.id).status)) {
         if (result.sleeping) {
@@ -255,7 +303,16 @@ export class Engine {
         }
       }
     } catch (cause) {
-      if (active(this.store.get(attempt.id).status))
+      const current = this.store.get(attempt.id);
+      if (resume !== undefined && !started) {
+        this.nextWake.set(attempt.id, Date.now() + this.intervalMs);
+        if (current.status === "sleeping" && !this.closed) {
+          const wakeError = errorMessage(cause);
+          this.store.update(attempt.id, { wakeError });
+          if (current.wakeError !== wakeError)
+            this.store.event(attempt.id, { type: "wake-failed", error: wakeError });
+        }
+      } else if (active(current.status))
         this.store.update(attempt.id, {
           status: "failed",
           error: errorMessage(cause),
@@ -372,7 +429,9 @@ export class Engine {
     this.closed = true;
     clearInterval(this.timer);
     for (const [id, controller] of this.controllers) {
-      if (active(this.store.get(id).status))
+      const status = this.store.get(id).status;
+      // A wake that has not started still has its sleeping checkpoint.
+      if (active(status) && status !== "sleeping")
         this.store.update(id, {
           status: "interrupted",
           human: undefined,
