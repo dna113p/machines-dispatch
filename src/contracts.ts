@@ -42,6 +42,7 @@ export type AttemptStatus =
   | "starting"
   | "running"
   | "waiting"
+  | "sleeping"
   | WorkReport["status"];
 export interface Attempt {
   id: string;
@@ -52,6 +53,9 @@ export interface Attempt {
   startedAt: string;
   updatedAt: string;
   human?: HostedHumanRequest;
+  runId?: string;
+  sleeping?: MachineHostResult["sleeping"];
+  cannotSleep?: string;
   state?: MachineHostResult["state"];
   result?: MachineHostResult;
   error?: string;
@@ -59,5 +63,10 @@ export interface Attempt {
   deliveryError?: string;
 }
 export function active(status: AttemptStatus): boolean {
-  return status === "starting" || status === "running" || status === "waiting";
+  return (
+    status === "starting" ||
+    status === "running" ||
+    status === "waiting" ||
+    status === "sleeping"
+  );
 }

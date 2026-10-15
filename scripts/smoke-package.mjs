@@ -80,7 +80,10 @@ try {
   child = spawn(
     process.execPath,
     [cli, "daemon", "--config", config, "--state-dir", state],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, MACHINES_RUN_STATUS_DIR: "off" },
+    },
   );
   let diagnostics = "";
   child.stderr.on("data", (chunk) => (diagnostics += chunk));

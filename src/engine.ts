@@ -1,5 +1,7 @@
+import { accessSync, constants, mkdirSync } from "node:fs";
 import { listMachines } from "@dna113p/machines/launcher";
 import { startMachineHost, type MachineHostRun } from "@dna113p/machines/host";
+import { runStatusDirectory } from "@dna113p/machines/run-status";
 import {
   active,
   ReportConflict,
@@ -83,7 +85,7 @@ export class Engine {
     }
     this.onPoll?.();
   }
-  /** Nothing is running, waiting for a Human, being admitted, or being written back. */
+  /** Nothing is running, waiting, sleeping, being admitted, or being written back. */
   idle(): boolean {
     return (
       !this.closed &&
@@ -189,15 +191,29 @@ export class Engine {
     this.track(this.execute(attempt, controller));
     return attempt;
   }
+  private sleepable(): string | undefined {
+    const directory = runStatusDirectory();
+    if (directory === undefined) return "run status publication is off";
+    try {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      accessSync(directory, constants.W_OK);
+      return undefined;
+    } catch (cause) {
+      return `the run-status directory cannot be written: ${errorMessage(cause)}`;
+    }
+  }
   private async execute(
     attempt: Attempt,
     controller: AbortController,
   ): Promise<void> {
     try {
+      const cannotSleep = this.sleepable();
+      this.store.update(attempt.id, { cannotSleep });
       const host = await startMachineHost({
         ...attempt.launch,
         // Where run status is published, each attempt's run is too, and says what it is for.
         publishRunStatus: true,
+        sleep: cannotSleep === undefined,
         label: attempt.launch.label ?? attempt.item.label,
         signal: controller.signal,
         onState: (state) => {
@@ -213,16 +229,31 @@ export class Engine {
         },
       });
       this.hosts.set(attempt.id, host);
+      this.store.update(attempt.id, { runId: host.id });
       if (this.store.get(attempt.id).status === "starting")
         this.store.update(attempt.id, { status: "running" });
       const result = await host.result;
-      if (active(this.store.get(attempt.id).status))
-        this.store.update(attempt.id, {
-          status: "completed",
-          result,
-          human: undefined,
-          delivery: "pending",
-        });
+      if (active(this.store.get(attempt.id).status)) {
+        if (result.sleeping) {
+          this.store.update(attempt.id, {
+            status: "sleeping",
+            state: result.state,
+            sleeping: result.sleeping,
+            human: undefined,
+          });
+          this.store.event(attempt.id, {
+            type: "sleeping",
+            sleeping: result.sleeping,
+          });
+        } else {
+          this.store.update(attempt.id, {
+            status: "completed",
+            result,
+            human: undefined,
+            delivery: "pending",
+          });
+        }
+      }
     } catch (cause) {
       if (active(this.store.get(attempt.id).status))
         this.store.update(attempt.id, {
@@ -273,6 +304,19 @@ export class Engine {
     response: string,
   ): Promise<void> {
     const attempt = this.store.get(id);
+    if (attempt.status === "sleeping") {
+      if (attempt.sleeping && "human" in attempt.sleeping)
+        throw new Error(
+          `Attempt ${id} is sleeping; answer it with: machine respond ${attempt.runId} ${attempt.sleeping.human.requestId}`,
+        );
+      const due =
+        attempt.sleeping && "due" in attempt.sleeping
+          ? attempt.sleeping.due
+          : "its timed wait is due";
+      throw new Error(
+        `Attempt ${id} is sleeping until ${due} and takes no response`,
+      );
+    }
     const host = this.hosts.get(id);
     if (
       attempt.status !== "waiting" ||
@@ -292,6 +336,7 @@ export class Engine {
     this.store.update(id, {
       status: "cancelled",
       human: undefined,
+      sleeping: undefined,
       error: "Cancelled by operator",
       delivery: "pending",
     });

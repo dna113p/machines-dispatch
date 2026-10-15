@@ -113,7 +113,7 @@ export class Store {
   }
   recover(): void {
     for (const attempt of this.list())
-      if (active(attempt.status))
+      if (active(attempt.status) && attempt.status !== "sleeping")
         this.update(attempt.id, {
           status: "interrupted",
           human: undefined,

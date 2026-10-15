@@ -11,7 +11,7 @@ The daemon supports Linux and Node 24 or newer.
 
 ## Build from source
 
-This checkout depends on the Machines 0.3 host interface, which is published on
+This checkout depends on the Machines 0.4 host interface, which is published on
 npm:
 
 ```sh
@@ -106,9 +106,10 @@ Human questions and Agent observations are available through status and logs.
 No credentials or home-directory paths are added to ticket files automatically.
 Machine-authored summaries are written as supplied.
 
-Closing a client does not stop runs. Stopping the daemon interrupts its runs and
-terminates their ordinary owned subprocesses. Deliberately detached or otherwise
-uncooperative processes retain Machines' existing lifecycle limitations.
+Closing a client does not stop runs. Stopping the daemon interrupts runs with a
+live process and terminates their ordinary owned subprocesses. Sleeping attempts
+stay sleeping. Deliberately detached or otherwise uncooperative processes retain
+Machines' existing lifecycle limitations.
 
 Each attempt's run also publishes Machines run status, by default in Machines'
 standard run-status directory. Setting `MACHINES_RUN_STATUS_DIR` to a directory
@@ -121,8 +122,29 @@ session that did not start the run pulls it in with
 in the workspace or with `--project <dir>` to open a local page that shows each
 attempt's run with its Machine's graph, its current state, and the states it
 entered. When the daemon's `MACHINES_RUN_STATUS_DIR` moves the directory, run
-`machine ui` with the same value. A waiting run's question is shown, and is still
-answered with `machines-dispatch respond`; the page cannot answer it.
+`machine ui` with the same value.
+
+With publication on and a writable run-status directory, Dispatch starts runs
+with sleep enabled. At a Human request or future timed wait, the run checkpoints
+and its process exits. The attempt becomes `sleeping`, with `delivery: "none"`;
+the ticket stays open and receives no result note. `status` shows its `runId`
+and either `sleeping.human.requestId` or `sleeping.due`. The published run record
+has `continuedBy: "host"`.
+
+Answer a sleeping Human request with `machine respond <run-id> <request-id>`
+using the daemon's `MACHINES_RUN_STATUS_DIR` when it selects a different directory.
+`machines-dispatch respond` refuses sleeping attempts and prints that command.
+When publication is off or the directory cannot be written, runs stay in-process;
+`status` reports the reason in `cannotSleep`. A Human request then has status
+`waiting` and is answered with `machines-dispatch respond` as before.
+
+A sleeping attempt counts as active: it prevents overlapping work on that ticket,
+blocks `retry`, and keeps the daemon from being idle for updates. A restart leaves
+it sleeping and writes nothing back. `cancel` writes a cancelled result to the
+ticket, but its Machines run stays sleeping and Dispatch will never wake that
+cancelled attempt. A person can run `machine continue <run-id>` outside Dispatch.
+Automatic waking is deferred to org-38; answering a sleeping request or continuing
+its run manually currently leaves the Dispatch attempt sleeping and the ticket open.
 
 ## Updates
 
@@ -152,9 +174,9 @@ are off. A failed check or install is recorded in that state, never stops work,
 and is tried again at a later check. That holds for `update --install` too: the
 request stands for the version it found, and never extends to a later release.
 
-Installing waits until the daemon is idle: no attempt is starting, running, or
-waiting for a Human, and no result is still being written back. It then holds new
-admissions, runs `npm install` for that exact version beside the copy in use, and
+Installing waits until the daemon is idle: no attempt is starting, running,
+waiting for a Human, or sleeping, and no result is still being written back. It
+then holds new admissions, runs `npm install` for that exact version beside the copy in use, and
 restarts in place with the same command line and process ID, so a service manager,
 a foreground `daemon`, and a detached `start` all continue unchanged. If the
 install fails, or leaves anything but that release, the daemon does not restart and
@@ -350,8 +372,9 @@ does not read issue event history.
 ## Recovery and multiple computers
 
 The journal records an attempt before launch, and records its result before
-updating tickets. Restart marks unfinished attempts interrupted and invalidates
-old Human responses. It never automatically replays uncertain work. Inspect
+updating tickets. Restart preserves sleeping attempts without writeback. It marks
+attempts that had a live process interrupted and invalidates their old Human
+responses. It never automatically replays uncertain work. Inspect
 prior effects before retrying; a retry is a new attempt, not workflow resumption.
 
 Local deduplication covers one daemon state directory. Git moves ticket files;
@@ -400,8 +423,11 @@ still recognized; new writes use the `machines-dispatch` forms.
 
 Copy `examples/demo` into a temporary workspace, then start its configuration.
 Its fake research Agent routes a ticket to a fake implementation Agent, which
-asks for Human approval. Respond `approve` to close the ticket or `hold` to retain
-it for attention. The demo uses no model credentials or network calls.
+asks for Human approval. Set `MACHINES_RUN_STATUS_DIR=off` in the daemon's
+environment to answer it in-process with `machines-dispatch respond`: `approve`
+closes the ticket and `hold` retains it for attention. With publication on, its
+Human request sleeps as described above. The demo uses no model credentials or
+network calls.
 
 ```sh
 npm run check
