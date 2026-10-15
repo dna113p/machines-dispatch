@@ -269,7 +269,7 @@ test("where run status is published, each attempt's run is published under its t
   const directory = join(root, "runs");
   process.env.MACHINES_RUN_STATUS_DIR = directory;
   t.after(() => {
-    delete process.env.MACHINES_RUN_STATUS_DIR;
+    process.env.MACHINES_RUN_STATUS_DIR = "off";
   });
   const daemon = await startDaemon({
     stateDir: join(root, "state"),
@@ -280,17 +280,22 @@ test("where run status is published, each attempt's run is published under its t
   const records = async () =>
     Promise.all(
       (await readdir(directory).catch(() => []))
-        .filter((name) => !name.startsWith(".") && name.endsWith(".json"))
+        .filter(
+          (name) =>
+            !name.startsWith(".") &&
+            name.endsWith(".json") &&
+            !name.endsWith(".checkpoint.json"),
+        )
         .map(async (name) =>
           JSON.parse(await readFile(join(directory, name), "utf8")),
         ),
     );
   const published = await until(records, (list) =>
-    list.length === 2 && list.every((record) => record.status === "waiting"),
+    list.length === 2 && list.every((record) => record.status === "sleeping"),
   );
   assert.deepEqual(
     published
-      .map((record) => [record.label, record.machine, record.answeredBy])
+      .map((record) => [record.label, record.machine, record.continuedBy])
       .sort(),
     [
       ["a: Fix the widget", "review", "host"],

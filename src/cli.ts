@@ -13,9 +13,10 @@ const usage = `machines-dispatch <command> [--state-dir directory] [--json]
   start --config file        Start a detached local daemon
   stop                       Stop daemon and interrupt active attempts
   sources                    Show registration health
-  status [attempt]           Show executions and pending Human requests
+  status [attempt]           Show executions, sleeping attempts and Human requests
   logs <attempt>             Show persisted observations
   respond <attempt> <request> <response>
+                             Answer a Human request waiting in-process
   cancel <attempt>           Cancel active execution
   retry <attempt>            Deliberately retry eligible work
   update [--install]         Check for a newer Machines; install it when idle`;
