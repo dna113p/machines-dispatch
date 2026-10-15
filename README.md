@@ -144,8 +144,17 @@ preserves the sleeping attempt instead of interrupting it. `cancel` writes a
 cancelled result to the ticket, but its Machines run stays sleeping and Dispatch
 will never wake that cancelled attempt. A person can run `machine continue <run-id>`
 outside Dispatch.
-Continuing its run manually currently leaves the Dispatch attempt sleeping and
-the ticket open; reconciling those runs is deferred to org-39.
+When a sleeping run finishes outside Dispatch, whether completed or failed, its
+attempt becomes `continued-outside`. `status` shows the record's final state and
+its summary in `note`, or its `error`. There is no writeback: the ticket stays
+open, and the attempt no longer counts as active, so retry and updates can proceed.
+
+Dispatch also marks a sleeping attempt `continued-outside` with the note
+"run record not found" when its record file is gone from the directory stored
+when it slept, provided that directory still exists, is readable, and is still
+the daemon's current run-status directory. Unreadable records and missing or
+changed directories leave the attempt sleeping. Older attempts without a stored
+directory cannot be marked missing.
 
 On each poll, Dispatch continues its own sleeping runs once they are answered or
 due, keeping the same attempt and run id. A repeating wait sleeps again as that

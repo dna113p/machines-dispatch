@@ -1,9 +1,11 @@
-import { accessSync, constants, mkdirSync } from "node:fs";
+import { accessSync, constants, mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { listMachines } from "@dna113p/machines/launcher";
 import { startMachineHost, type MachineHostRun } from "@dna113p/machines/host";
 import {
   readRunStatuses,
   runStatusDirectory,
+  type RunStatusRecord,
 } from "@dna113p/machines/run-status";
 import {
   active,
@@ -101,11 +103,12 @@ export class Engine {
       if (
         attempt.status !== "sleeping" ||
         !attempt.runId ||
-        this.controllers.has(attempt.id) ||
-        (this.nextWake.get(attempt.id) ?? 0) > now
+        this.controllers.has(attempt.id)
       )
         continue;
       const record = records.get(attempt.runId);
+      if (this.reconcile(attempt, record, directory)) continue;
+      if ((this.nextWake.get(attempt.id) ?? 0) > now) continue;
       if (
         record?.status !== "sleeping" ||
         record.continuedBy !== "host" ||
@@ -118,6 +121,57 @@ export class Engine {
       const controller = new AbortController();
       this.controllers.set(attempt.id, controller);
       this.track(this.execute(attempt, controller, attempt.runId));
+    }
+  }
+  private reconcile(
+    attempt: Attempt,
+    record: RunStatusRecord | undefined,
+    directory: string,
+  ): boolean {
+    if (record?.status === "completed" || record?.status === "failed") {
+      this.store.update(attempt.id, {
+        status: "continued-outside",
+        state: record.state as Attempt["state"],
+        note: record.note,
+        error: record.error,
+        sleeping: undefined,
+        wakeError: undefined,
+      });
+      this.store.event(attempt.id, {
+        type: "continued-outside",
+        runId: attempt.runId,
+        status: record.status,
+      });
+      return true;
+    }
+    if (record || !this.missingRunRecord(attempt, directory)) return false;
+    this.store.update(attempt.id, {
+      status: "continued-outside",
+      note: "run record not found",
+      sleeping: undefined,
+      wakeError: undefined,
+    });
+    this.store.event(attempt.id, {
+      type: "continued-outside",
+      runId: attempt.runId,
+      note: "run record not found",
+    });
+    return true;
+  }
+  private missingRunRecord(attempt: Attempt, directory: string): boolean {
+    if (!attempt.runId || attempt.runStatusDir !== directory) return false;
+    try {
+      statSync(join(directory, `${attempt.runId}.json`));
+      return false;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    try {
+      // A failed listing must not make a record appear missing.
+      accessSync(directory, constants.R_OK | constants.X_OK);
+      return statSync(directory).isDirectory();
+    } catch {
+      return false;
     }
   }
   /** Nothing is running, waiting, sleeping, being admitted, or being written back. */
@@ -285,6 +339,7 @@ export class Engine {
         if (result.sleeping) {
           this.store.update(attempt.id, {
             status: "sleeping",
+            runStatusDir: runStatusDirectory(),
             state: result.state,
             sleeping: result.sleeping,
             human: undefined,
