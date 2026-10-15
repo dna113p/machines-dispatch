@@ -55,6 +55,7 @@ export interface Attempt {
   human?: HostedHumanRequest;
   runId?: string;
   sleeping?: MachineHostResult["sleeping"];
+  wakeError?: string;
   cannotSleep?: string;
   state?: MachineHostResult["state"];
   result?: MachineHostResult;
