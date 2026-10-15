@@ -107,8 +107,10 @@ test("an attempt sleeps at a Human request, keeps its ticket open, and stays asl
   const before = await readTicket(root, "a");
   assert.match(before, /status: open/);
   assert.doesNotMatch(before, /Machines Dispatch/);
-  assert.equal(daemon.engine.idle(), false);
-  assert.equal(daemon.engine.hold(), false);
+  // A sleeping attempt does not keep the daemon from installing an update.
+  await until(() => daemon.engine.idle(), Boolean);
+  assert.equal(daemon.engine.hold(), true);
+  daemon.engine.release();
   await assert.rejects(daemon.engine.retry(attempt!.id), /Wait for the prior attempt/);
   const stored = daemon.engine.store.get(attempt!.id);
   assert.equal(
@@ -326,7 +328,8 @@ test("a failed wake keeps the attempt sleeping, shows the error, and logs a boun
   assert.equal(failed!.delivery, "none");
   assert.equal(await readTicket(root, "a"), before);
   assert.equal((await record(runs, runId)).status, "sleeping");
-  assert.equal(restarted.engine.idle(), false);
+  // Between wake retries, an attempt that only sleeps leaves the daemon idle.
+  await until(() => restarted.engine.idle(), Boolean);
 
   // The same error over many polls is logged once.
   const logged = () => restarted.engine.store.events(attempt!.id) as Logged[];
@@ -384,6 +387,35 @@ test("a failed wake waits a poll interval before retrying and clears its error a
   assert.match(await readTicket(root, "a"), /status: closed/);
 });
 
+test("a held daemon wakes no sleeping run until it is released", async (t) => {
+  const root = await workspace(t);
+  const runs = join(root, "runs");
+  publishTo(t, runs);
+  await definition(root, "work", "complete", true);
+  const { engine, store, attempt } = await setupEngine(t, root);
+  assert.ok(attempt.sleeping && "human" in attempt.sleeping);
+  await until(() => engine.idle(), Boolean);
+  assert.equal(engine.hold(), true);
+  await respond(runs, attempt.runId!, attempt.sleeping.human.requestId, "yes");
+  engine.poll();
+  await delay(300);
+  engine.poll();
+  await delay(300);
+  assert.equal(store.get(attempt.id).status, "sleeping");
+  assert.equal((await record(runs, attempt.runId!)).status, "sleeping");
+  assert.equal(engine.idle(), true);
+
+  engine.release();
+  engine.poll();
+  const done = await until(
+    () => store.get(attempt.id),
+    (value) => value.delivery === "applied",
+  );
+  assert.equal(done.status, "completed");
+  assert.equal(store.list().length, 1);
+  assert.match(await readTicket(root, "a"), /status: closed/);
+});
+
 test("closing during a wake's startup preserves the sleeping attempt and checkpoint", async (t) => {
   const root = await workspace(t);
   const runs = join(root, "runs");
@@ -428,8 +460,11 @@ export default function ({machine, operation, human}) {
     (value) => value.status === "running" && value.state === "work",
   );
   await engine.close();
-  assert.equal(store.get(attempt.id).status, "interrupted");
-  assert.equal(store.get(attempt.id).delivery, "pending");
+  // Cut off, not written back: the next start decides whether to continue it.
+  const cut = store.get(attempt.id) as typeof attempt & { cutOff?: true };
+  assert.equal(cut.status, "interrupted");
+  assert.equal(cut.delivery, "none");
+  assert.equal(cut.cutOff, true);
   const stopped = await record(runs, attempt.runId!);
   assert.equal(stopped.status, "failed");
   assert.match(stopped.error, /terminated/);

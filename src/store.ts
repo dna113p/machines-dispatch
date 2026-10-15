@@ -117,7 +117,8 @@ export class Store {
         this.update(attempt.id, {
           status: "interrupted",
           human: undefined,
-          delivery: "pending",
+          delivery: attempt.runId ? "none" : "pending",
+          cutOff: attempt.runId ? true : undefined,
           error:
             "Daemon stopped before the attempt finished; inspect effects before retrying.",
         });

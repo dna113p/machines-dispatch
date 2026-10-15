@@ -139,7 +139,7 @@ When publication is off or the directory cannot be written, runs stay in-process
 `waiting` and is answered with `machines-dispatch respond` as before.
 
 A sleeping attempt counts as active: it prevents overlapping work on that ticket,
-blocks `retry`, and keeps the daemon from being idle for updates. A restart
+and blocks `retry`. It counts as idle for updates. A restart
 preserves the sleeping attempt instead of interrupting it. `cancel` writes a
 cancelled result to the ticket, but its Machines run stays sleeping and Dispatch
 will never wake that cancelled attempt. A person can run `machine continue <run-id>`
@@ -183,8 +183,9 @@ and is tried again at a later check. That holds for `update --install` too: the
 request stands for the version it found, and never extends to a later release.
 
 Installing waits until the daemon is idle: no attempt is starting, running,
-waiting for a Human, or sleeping, and no result is still being written back. It
-then holds new admissions, runs `npm install` for that exact version beside the copy in use, and
+waiting for a Human in-process, or awaiting recovery, and no result is still being
+written back. Sleeping attempts can remain. It then holds new admissions and
+wakes, runs `npm install` for that exact version beside the copy in use, and
 restarts in place with the same command line and process ID, so a service manager,
 a foreground `daemon`, and a detached `start` all continue unchanged. If the
 install fails, or leaves anything but that release, the daemon does not restart and
@@ -380,10 +381,19 @@ does not read issue event history.
 ## Recovery and multiple computers
 
 The journal records an attempt before launch, and records its result before
-updating tickets. Restart preserves sleeping attempts without writeback. It marks
-attempts that had a live process interrupted and invalidates their old Human
-responses. It never automatically replays uncertain work. Inspect
-prior effects before retrying; a retry is a new attempt, not workflow resumption.
+updating tickets. Restart preserves sleeping attempts without writeback. A stop
+marks an unfinished, non-sleeping run `interrupted` with `cutOff: true`, invalidates
+its old Human responses, and defers writeback until the next startup.
+
+On startup, Dispatch automatically continues a cut-off run it started once from
+its checkpoint, keeping the same attempt and run id. It records `continued: 1`
+before continuing and clears `cutOff`. The interrupted state is entered again;
+inspect effects that state may repeat. A second cut-off is written back as
+interrupted, with the reason shown in `status`, and is not continued automatically.
+Without run-status publication, a run record, or a usable checkpoint, the attempt
+is written back as interrupted. Dispatch never continues an unrecorded run.
+Inspect prior effects before retrying; a retry is a new attempt, not workflow
+resumption.
 
 Local deduplication covers one daemon state directory. Git moves ticket files;
 it does not coordinate independent computers. Two computers can execute the same

@@ -54,6 +54,10 @@ export interface Attempt {
   updatedAt: string;
   human?: HostedHumanRequest;
   runId?: string;
+  /** A stopped run awaiting the next startup's recovery decision. */
+  cutOff?: true;
+  /** Automatic restart continuations already claimed for this attempt. */
+  continued?: number;
   sleeping?: MachineHostResult["sleeping"];
   wakeError?: string;
   cannotSleep?: string;
