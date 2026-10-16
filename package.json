@@ -25,6 +25,7 @@
     "dist/src",
     "examples",
     "README.md",
+    "docs",
     "LICENSE"
   ],
   "scripts": {
