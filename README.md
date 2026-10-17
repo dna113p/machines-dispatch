@@ -247,3 +247,12 @@ npm run test:tk
 - [Runs](docs/runs.md): status, sleeping, waking, recovery
 - [Custom sources](docs/custom-sources.md): the `WorkSource` interface and Auto
   Machines compatibility
+
+## The Machines family
+
+| Project | What it does |
+| --- | --- |
+| [Machines](https://github.com/dna113p/machines) | The runtime: write a workflow as states, and run it with Agents, checks and people |
+| [Machine Shop](https://github.com/dna113p/machine-shop) | Ready-made software workflows to copy into a project |
+| **Machines Dispatch** (this repository) | A local daemon that runs a Machine for each ticket that is ready |
+| [Machine Wars](https://github.com/dna113p/machine-wars) | A concept: ranking Agents so a Machine can pick one |
