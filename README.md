@@ -122,7 +122,9 @@ Further context, design notes, and acceptance criteria belong here.
 
 - Every `open` or `in_progress` ticket whose dependencies are done is
   considered. There is no automation label and no concurrency limit, so register only
-  sources you mean to automate.
+  sources you mean to automate. Tickets of one repository implement concurrently;
+  Machine Shop's ticket workflow takes a per-repository turn for commit, rebase and
+  delivery, so one candidate at a time lands on a base.
 - A ticket without `machine` uses the registration's `defaultMachine`. An
   invalid explicit Machine never falls back to the default.
 - Problems such as missing dependencies, cycles and malformed tickets show in
