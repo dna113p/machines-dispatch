@@ -12,6 +12,7 @@ import { parseDocument, type Document } from "yaml";
 import * as v from "valibot";
 import {
   ReportConflict,
+  type ClaimStore,
   type LaunchRequest,
   type SourceScan,
   type WorkItem,
@@ -34,6 +35,8 @@ export interface TkOptions {
   allowedMachines?: readonly string[];
   agents?: Readonly<Record<string, string>>;
   home?: string;
+  /** Shares admission with other computers; see `gitClaims`. */
+  claims?: ClaimStore;
 }
 interface Ticket {
   id: string;
@@ -155,6 +158,7 @@ export function tk(options: TkOptions): WorkSource {
   }
   return {
     id: options.id,
+    ...(options.claims === undefined ? {} : { claims: options.claims }),
     async scan(): Promise<SourceScan> {
       const { entries, issues } = await tickets();
       const items = [...entries.values()]
@@ -224,7 +228,9 @@ export function tk(options: TkOptions): WorkSource {
           throw new ReportConflict(
             `${ref.id}: ticket changed during execution; result is retained locally`,
           );
-        let summary = `Attempt ${report.status}. Inspect the local execution record for details.`;
+        let summary = report.reason
+          ? `Attempt ${report.status}: ${report.reason}. Inspect the local execution record for details.`
+          : `Attempt ${report.status}. Inspect the local execution record for details.`;
         if (report.status === "completed") {
           const parsed = v.safeParse(outcomeSchema, report.result?.output);
           if (!parsed.success)

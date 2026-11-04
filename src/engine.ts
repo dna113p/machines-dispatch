@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { accessSync, constants, mkdirSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { listMachines } from "@dna113p/machines/launcher";
 import { startMachineHost, type MachineHostRun } from "@dna113p/machines/host";
@@ -9,8 +11,12 @@ import {
 } from "@dna113p/machines/run-status";
 import {
   active,
+  ClaimLost,
   ReportConflict,
   type Attempt,
+  type AttemptClaim,
+  type ClaimStore,
+  type Holder,
   type WorkItem,
   type WorkSource,
 } from "./contracts.ts";
@@ -21,6 +27,14 @@ export interface SourceStatus {
   id: string;
   checkedAt?: string;
   issues: string[];
+}
+export interface EngineOptions {
+  /** This computer's name in claims. Defaults to the host name. */
+  host?: string;
+  /** Shortest wait before asking again for a ticket another daemon holds. */
+  claimBackoffMs?: number;
+  /** Wait before asking again for a request another daemon finished. */
+  finishedBackoffMs?: number;
 }
 export class Engine {
   readonly store: Store;
@@ -33,6 +47,19 @@ export class Engine {
   private readonly delivering = new Set<string>();
   private readonly nextDelivery = new Map<string, number>();
   private readonly nextWake = new Map<string, number>();
+  /** Attempts with a claim renewal, recovery or finish in flight. */
+  private readonly tending = new Set<string>();
+  /** Why an attempt from before claims were enabled could not take its claim yet. */
+  private readonly adoptErrors = new Map<string, string>();
+  /** Scopes held or finished elsewhere, not asked for again until `until`. */
+  private readonly claimWaits = new Map<
+    string,
+    { until: number; issue: string; key?: string }
+  >();
+  private readonly claimBackoffMs: number;
+  private readonly finishedBackoffMs: number;
+  /** Names this daemon in claims. */
+  readonly identity: { readonly daemon: string; readonly host: string };
   private timer?: NodeJS.Timeout;
   private closed = false;
   private admitting = 0;
@@ -44,8 +71,11 @@ export class Engine {
     store: Store,
     sources: readonly WorkSource[],
     intervalMs = 5_000,
+    options: EngineOptions = {},
   ) {
     this.intervalMs = intervalMs;
+    this.claimBackoffMs = options.claimBackoffMs ?? 30_000;
+    this.finishedBackoffMs = options.finishedBackoffMs ?? 300_000;
     this.store = store;
     this.sources = new Map();
     for (const source of sources) {
@@ -55,6 +85,10 @@ export class Engine {
       this.statuses.set(source.id, { id: source.id, issues: [] });
     }
     store.recover();
+    this.identity = {
+      daemon: store.daemonId(),
+      host: options.host ?? hostname(),
+    };
   }
   start(): void {
     if (this.closed || this.timer)
@@ -63,44 +97,58 @@ export class Engine {
     this.continueCutOff();
     this.poll();
   }
-  private continueCutOff(): void {
+  private runRecords(): Map<string, RunStatusRecord> {
     const directory = runStatusDirectory();
-    const records = new Map(
+    return new Map(
       (directory === undefined ? [] : readRunStatuses(directory)).map(
         (record) => [record.id, record],
       ),
     );
-    for (const attempt of this.store.list()) {
-      if (!attempt.cutOff) continue;
-      const record = attempt.runId ? records.get(attempt.runId) : undefined;
+  }
+  private continueCutOff(): void {
+    const records = this.runRecords();
+    // A claimed attempt continues only after renewing its claim, from `poll`;
+    // one whose claim store is gone stays cut off.
+    for (const attempt of this.store.list())
       if (
-        !attempt.continued &&
-        record &&
-        record.status !== "sleeping" &&
-        record.status !== "completed"
-      ) {
-        // Persist the claim before starting: another stop must not continue it twice.
-        const next = this.store.update(attempt.id, {
-          status: "running",
-          cutOff: undefined,
-          continued: 1,
-          error: undefined,
-        });
-        this.store.event(attempt.id, { type: "continued", runId: record.id });
-        const controller = new AbortController();
-        this.controllers.set(attempt.id, controller);
-        this.track(
-          this.execute(next, controller, { id: record.id, mode: "continue" }),
-        );
-      } else {
-        this.store.update(attempt.id, {
-          cutOff: undefined,
-          delivery: "pending",
-          error: attempt.continued
-            ? "Cut off again after one automatic continuation; not continued again. Inspect effects before retrying."
-            : attempt.error,
-        });
-      }
+        attempt.cutOff &&
+        !this.holdsClaim(attempt) &&
+        !this.needsAdoption(attempt)
+      )
+        this.recoverCutOff(attempt, records);
+  }
+  private recoverCutOff(
+    attempt: Attempt,
+    records: Map<string, RunStatusRecord>,
+  ): void {
+    const record = attempt.runId ? records.get(attempt.runId) : undefined;
+    if (
+      !attempt.continued &&
+      record &&
+      record.status !== "sleeping" &&
+      record.status !== "completed"
+    ) {
+      // Persist the claim before starting: another stop must not continue it twice.
+      const next = this.store.update(attempt.id, {
+        status: "running",
+        cutOff: undefined,
+        continued: 1,
+        error: undefined,
+      });
+      this.store.event(attempt.id, { type: "continued", runId: record.id });
+      const controller = new AbortController();
+      this.controllers.set(attempt.id, controller);
+      this.track(
+        this.execute(next, controller, { id: record.id, mode: "continue" }),
+      );
+    } else {
+      this.store.update(attempt.id, {
+        cutOff: undefined,
+        delivery: "pending",
+        error: attempt.continued
+          ? "Cut off again after one automatic continuation; not continued again. Inspect effects before retrying."
+          : attempt.error,
+      });
     }
   }
   private track(job: Promise<void>): void {
@@ -130,8 +178,216 @@ export class Engine {
         this.deliver(attempt).finally(() => this.delivering.delete(attempt.id)),
       );
     }
+    this.tendClaims();
     this.wake();
     this.onPoll?.();
+  }
+  /** Whether this attempt still holds a claim, whether or not its store is configured. */
+  private holdsClaim(attempt: Attempt): boolean {
+    const state = attempt.claim?.state;
+    return state === "held" || state === "finishing";
+  }
+  /** The claim store still holding this attempt's claim, if it has one. */
+  private claims(attempt: Attempt): ClaimStore | undefined {
+    return this.holdsClaim(attempt)
+      ? this.sources.get(attempt.source)?.claims
+      : undefined;
+  }
+  /**
+   * Why a claimed attempt cannot reach its claim store: its source was removed
+   * or no longer has `claims`. Such an attempt stays stopped, since it cannot
+   * confirm that another computer has not taken its ticket.
+   */
+  private claimUnavailable(attempt: Attempt): string | undefined {
+    if (!this.holdsClaim(attempt) || this.claims(attempt)) return undefined;
+    const source = JSON.stringify(attempt.source);
+    return `claim store unavailable: source ${source} ${
+      this.sources.has(attempt.source)
+        ? "is no longer configured with claims"
+        : "is no longer configured"
+    }; attempt ${attempt.id} holds a claim, so it is not continued, woken or finished until claims are configured again`;
+  }
+  /**
+   * An attempt from before its source had claims, still able to resume (cut
+   * off or sleeping). It must take a claim first, or another computer could
+   * run the same ticket.
+   */
+  private needsAdoption(attempt: Attempt): boolean {
+    return (
+      !attempt.claim &&
+      (attempt.cutOff === true || attempt.status === "sleeping") &&
+      !!this.sources.get(attempt.source)?.claims
+    );
+  }
+  /** Claims a resumable attempt from before claims, or stops it if another computer has the ticket. */
+  private async adopt(id: string, claims: ClaimStore): Promise<void> {
+    const attempt = this.store.get(id);
+    if (this.closed || !this.needsAdoption(attempt)) return;
+    let acquisition;
+    try {
+      acquisition = await claims.acquire({
+        scope: `${attempt.source}/${attempt.item.label}`,
+        key: attempt.item.key,
+        holder: { ...this.identity, attempt: id },
+        retry: false,
+      });
+    } catch (cause) {
+      // Fail closed: it stays stopped and is asked again on the next poll.
+      this.adoptErrors.set(
+        id,
+        `claim check failed for attempt ${id} from before claims were enabled, not resumed: ${errorMessage(cause)}`,
+      );
+      return;
+    }
+    this.adoptErrors.delete(id);
+    if (acquisition.acquired) {
+      this.store.update(id, {
+        claim: { lease: acquisition.lease, state: "held" },
+      });
+      this.store.event(id, { type: "claim-adopted" });
+      const current = this.store.get(id);
+      if (current.cutOff && !this.closed)
+        this.recoverCutOff(current, this.runRecords());
+      return;
+    }
+    const reason = acquisition.finished
+      ? "Claims were enabled after this attempt started, and another computer already finished this request; not resumed"
+      : `Claims were enabled after this attempt started, and ${
+          acquisition.holder?.host ?? "another daemon"
+        } holds this ticket; not resumed`;
+    // A cut-off run is never continued and a sleeping one never woken.
+    this.store.update(id, {
+      status: "interrupted",
+      error: reason,
+      claimRefused: reason,
+      human: undefined,
+      sleeping: undefined,
+      cutOff: undefined,
+      delivery: "pending",
+    });
+    this.store.event(id, {
+      type: "claim-refused",
+      ...(acquisition.holder ? { holder: acquisition.holder } : {}),
+      ...(acquisition.finished ? { finished: true } : {}),
+    });
+    this.controllers.get(id)?.abort();
+  }
+  /** Ran and written back (or never will be): its key is consumed. */
+  private settled(attempt: Attempt): boolean {
+    return (
+      !active(attempt.status) && !attempt.cutOff && attempt.delivery !== "pending"
+    );
+  }
+  private tendClaims(): void {
+    const now = Date.now();
+    for (const attempt of this.store.list()) {
+      const unavailable = this.claimUnavailable(attempt);
+      if (unavailable) this.changeClaim(attempt.id, { error: unavailable });
+      if (this.needsAdoption(attempt) && !this.tending.has(attempt.id)) {
+        const store = this.sources.get(attempt.source)!.claims!;
+        this.tending.add(attempt.id);
+        this.track(
+          this.adopt(attempt.id, store).finally(() =>
+            this.tending.delete(attempt.id),
+          ),
+        );
+        continue;
+      }
+      const claims = this.claims(attempt);
+      if (!claims || this.tending.has(attempt.id)) continue;
+      const { lease } = attempt.claim!;
+      const due = Date.parse(lease.expiresAt) - now < lease.ttlMs / 2;
+      const recover = attempt.cutOff === true;
+      const settle = this.settled(attempt);
+      if (!due && !recover && !settle) continue;
+      this.tending.add(attempt.id);
+      this.track(
+        this.tend(attempt.id, claims, { due, recover, settle }).finally(() =>
+          this.tending.delete(attempt.id),
+        ),
+      );
+    }
+  }
+  private async tend(
+    id: string,
+    claims: ClaimStore,
+    work: { due: boolean; recover: boolean; settle: boolean },
+  ): Promise<void> {
+    if (this.closed) return;
+    if (work.recover) {
+      // A cut-off run continues only while this daemon still holds its ticket.
+      if (!(await this.confirm(id, claims)) || this.closed) return;
+      const attempt = this.store.get(id);
+      if (attempt.cutOff) this.recoverCutOff(attempt, this.runRecords());
+      return;
+    }
+    if (work.due && !(await this.confirm(id, claims))) return;
+    if (!work.settle || this.store.get(id).claim?.state === "lost") return;
+    this.changeClaim(id, { state: "finishing" });
+    try {
+      await claims.finish(this.store.get(id).claim!.lease);
+      this.changeClaim(id, { state: "done", error: undefined });
+      this.store.event(id, { type: "claim-finished" });
+    } catch (cause) {
+      if (cause instanceof ClaimLost) this.lose(id, cause.holder);
+      else this.changeClaim(id, { error: errorMessage(cause) });
+    }
+  }
+  /** Renews now. Whether this daemon still holds the claim; errors leave it held. */
+  private async confirm(id: string, claims: ClaimStore): Promise<boolean> {
+    const lease = this.store.get(id).claim?.lease;
+    if (!lease) return false;
+    let renewal;
+    try {
+      renewal = await claims.renew(lease);
+    } catch (cause) {
+      this.changeClaim(id, { error: errorMessage(cause) });
+      return false;
+    }
+    if (!renewal.ok) {
+      this.lose(id, renewal.holder);
+      return false;
+    }
+    this.changeClaim(id, { lease: renewal.lease, error: undefined });
+    return true;
+  }
+  /** Updates a claim this daemon still holds. */
+  private changeClaim(id: string, change: Partial<AttemptClaim>): void {
+    const claim = this.store.get(id).claim;
+    if (!claim || claim.state === "lost" || claim.state === "done") return;
+    const next = { ...claim, ...change };
+    if (JSON.stringify(next) !== JSON.stringify(claim))
+      this.store.update(id, { claim: next });
+  }
+  /** Another daemon has the ticket: stop this attempt and never finish its claim. */
+  private lose(id: string, holder?: Holder): void {
+    const attempt = this.store.get(id);
+    const claim = attempt.claim;
+    if (!claim || claim.state === "lost" || claim.state === "done") return;
+    const reason = new ClaimLost(holder).message;
+    // A cut-off run is never continued and a sleeping one never woken.
+    const stops = active(attempt.status) || attempt.cutOff === true;
+    const { error: _error, ...kept } = claim;
+    this.store.update(id, {
+      claim: {
+        ...kept,
+        state: "lost",
+        ...(holder ? { lostTo: holder } : {}),
+        ...(stops ? { reason } : {}),
+      },
+      ...(stops
+        ? {
+            status: "interrupted" as const,
+            error: reason,
+            human: undefined,
+            sleeping: undefined,
+            cutOff: undefined,
+            delivery: "pending" as const,
+          }
+        : {}),
+    });
+    this.store.event(id, { type: "claim-lost", ...(holder ? { holder } : {}) });
+    if (stops) this.controllers.get(id)?.abort();
   }
   private wake(): void {
     if (this.held) return;
@@ -160,10 +416,39 @@ export class Engine {
         )
       )
         continue;
+      // An attempt from before claims wakes only after taking its claim.
+      if (this.tending.has(attempt.id) || this.needsAdoption(attempt)) continue;
+      const claims = this.claims(attempt);
+      // Without its claim store, a claimed run cannot confirm it still holds the ticket.
+      if (!claims && this.holdsClaim(attempt)) continue;
       const controller = new AbortController();
       this.controllers.set(attempt.id, controller);
+      const run = { id: attempt.runId, mode: "wake" } as const;
+      if (!claims) {
+        this.track(this.execute(attempt, controller, run));
+        continue;
+      }
+      // A sleeping run wakes only while this daemon still holds its ticket.
+      this.tending.add(attempt.id);
       this.track(
-        this.execute(attempt, controller, { id: attempt.runId, mode: "wake" }),
+        (async () => {
+          let confirmed = false;
+          try {
+            confirmed = await this.confirm(attempt.id, claims);
+          } finally {
+            this.tending.delete(attempt.id);
+          }
+          if (
+            confirmed &&
+            !controller.signal.aborted &&
+            !this.closed &&
+            this.store.get(attempt.id).status === "sleeping"
+          )
+            return this.execute(attempt, controller, run);
+          this.controllers.delete(attempt.id);
+          if (!confirmed)
+            this.nextWake.set(attempt.id, Date.now() + this.intervalMs);
+        })(),
       );
     }
   }
@@ -264,6 +549,14 @@ export class Engine {
     } catch (cause) {
       issues.push(errorMessage(cause));
     }
+    for (const attempt of this.store.list()) {
+      const unavailable =
+        attempt.source === source.id ? this.claimUnavailable(attempt) : undefined;
+      if (unavailable) issues.push(`${attempt.item.label}: ${unavailable}`);
+      const adoption =
+        attempt.source === source.id ? this.adoptErrors.get(attempt.id) : undefined;
+      if (adoption) issues.push(`${attempt.item.label}: ${adoption}`);
+    }
     this.statuses.set(source.id, {
       id: source.id,
       checkedAt: new Date().toISOString(),
@@ -291,7 +584,8 @@ export class Engine {
   ): Promise<Attempt | undefined> {
     if (this.closed || (!retry && this.store.attempted(source.id, item.key)))
       return;
-    // A routed request must not overlap an older attempt or its pending writeback.
+    // A routed request must not overlap an older attempt or its pending
+    // writeback, nor an older claim not yet finished.
     if (
       this.store
         .list()
@@ -299,10 +593,20 @@ export class Engine {
           (a) =>
             a.source === source.id &&
             a.item.label === item.label &&
-            (active(a.status) || a.delivery === "pending"),
+            (active(a.status) ||
+              a.delivery === "pending" ||
+              this.holdsClaim(a)),
         )
     )
       return;
+    const scope = `${source.id}/${item.label}`;
+    const wait = source.claims && !retry ? this.claimWaits.get(scope) : undefined;
+    if (
+      wait &&
+      wait.until > Date.now() &&
+      (wait.key === undefined || wait.key === item.key)
+    )
+      throw new Error(wait.issue);
     const launch = await source.prepare(item);
     if (!launch || this.closed) return;
     const catalog = await listMachines({ cwd: launch.cwd, home: launch.home });
@@ -317,17 +621,73 @@ export class Engine {
     if (!fresh || this.closed) return;
     if (JSON.stringify(fresh) !== JSON.stringify(launch))
       throw new Error("Launch request changed during validation");
-    const attempt = this.store.create(
-      source.id,
-      item,
-      { ...launch, machine: found.path },
-      retry,
-    );
-    if (!attempt) return;
+    const claimed = source.claims
+      ? await this.acquire(source.claims, scope, item, retry)
+      : undefined;
+    const attempt = this.closed
+      ? undefined
+      : this.store.create(
+          source.id,
+          item,
+          { ...launch, machine: found.path },
+          retry,
+          claimed,
+        );
+    if (!attempt) {
+      if (claimed)
+        await source.claims!.abandon(claimed.claim.lease).catch((cause) =>
+          process.emitWarning(`Could not release claim ${scope}: ${errorMessage(cause)}`),
+        );
+      return;
+    }
     const controller = new AbortController();
     this.controllers.set(attempt.id, controller);
     this.track(this.execute(attempt, controller));
     return attempt;
+  }
+  /** Claims the ticket for a new attempt, or throws the reason it is not launched. */
+  private async acquire(
+    claims: ClaimStore,
+    scope: string,
+    item: WorkItem,
+    retry: boolean,
+  ): Promise<{ id: string; claim: AttemptClaim }> {
+    const id = randomUUID();
+    let acquisition;
+    try {
+      acquisition = await claims.acquire({
+        scope,
+        key: item.key,
+        holder: { ...this.identity, attempt: id },
+        retry,
+      });
+    } catch (cause) {
+      // Fail closed: without an answer, another computer may hold the ticket.
+      throw new Error(`claim check failed, not launched: ${errorMessage(cause)}`);
+    }
+    if (acquisition.acquired) {
+      this.claimWaits.delete(scope);
+      return { id, claim: { lease: acquisition.lease, state: "held" } };
+    }
+    const now = Date.now();
+    const issue = acquisition.finished
+      ? "already finished on another computer"
+      : `claimed by ${acquisition.holder?.host ?? "another daemon"}${
+          acquisition.expiresAt ? ` until ${acquisition.expiresAt}` : ""
+        }`;
+    this.claimWaits.set(
+      scope,
+      acquisition.finished
+        ? { until: now + this.finishedBackoffMs, issue, key: item.key }
+        : {
+            until: Math.max(
+              Date.parse(acquisition.expiresAt ?? "") || 0,
+              now + this.claimBackoffMs,
+            ),
+            issue,
+          },
+    );
+    throw new Error(issue);
   }
   private sleepable(): string | undefined {
     const directory = runStatusDirectory();
@@ -452,12 +812,17 @@ export class Engine {
           | "interrupted",
         ...(attempt.result === undefined ? {} : { result: attempt.result }),
         ...(attempt.error === undefined ? {} : { error: attempt.error }),
+        ...(attempt.claim?.reason || attempt.claimRefused
+          ? { reason: attempt.claim?.reason ?? attempt.claimRefused }
+          : {}),
       });
       this.store.update(attempt.id, {
         delivery: "applied",
         deliveryError: undefined,
       });
       this.nextDelivery.delete(attempt.id);
+      // Record the consumed key promptly rather than on the next poll.
+      this.tendClaims();
     } catch (cause) {
       this.store.update(attempt.id, {
         delivery: cause instanceof ReportConflict ? "conflict" : "pending",

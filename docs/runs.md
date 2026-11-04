@@ -119,9 +119,110 @@ resumption.
 
 ## Multiple computers
 
-- Local deduplication covers one daemon state directory.
-- Git moves ticket files; it does not coordinate independent computers. Two
-  computers can execute the same eligible ticket. Use explicit work assignment
-  or tracker-specific coordination when needed.
-- The daemon performs no repository locking, Git synchronization, cleanliness
-  checks or automatic worktree creation.
+Local deduplication covers one daemon state directory. Git moves ticket files;
+it does not coordinate independent computers. **Without claims, two computers
+can execute the same eligible ticket**, and a request one computer finished
+runs again on another whose copy of the ticket is stale.
+
+### Claims
+
+A source registered with `claims` asks a shared claim store before launching:
+
+```ts
+export default ({ tk, gitClaims }) => [
+  tk({ id: "op", cwd: "./op", claims: gitClaims({ cwd: "./op" }) }),
+];
+```
+
+- **Scope and key.** A claim's scope is `<source id>/<ticket id>` (for GitHub,
+  `<source id>/<owner>/<repo>#<number>`). Its key is the request being run:
+  the same key that local deduplication uses.
+- **Admission.** After the source's checks, and before the attempt is
+  recorded, the daemon acquires the claim. If another daemon holds a live
+  lease, the ticket is not launched and `sources` shows
+  `T-42: claimed by <host> until <time>`; the daemon asks again after that time
+  (at least 30 seconds later). A request already finished elsewhere shows
+  `T-42: already finished on another computer`, checked again every 5 minutes.
+  If the store cannot be reached, nothing launches (`claim check failed, not
+  launched: ...`) and the next poll asks again.
+- **Holding.** The attempt keeps the claim from admission until its result is
+  written back, including while it sleeps or waits for a Human. The daemon
+  renews it when less than half its TTL remains. `status` shows each attempt's
+  `claim`: its `state` (`held`, `finishing`, `done` or `lost`), and its lease's
+  `holder` and `expiresAt`.
+- **Finishing.** Once the result is written back to the local ticket, the key
+  is recorded as finished in the claim and the lease ends. Every attempt that
+  ran consumes its key this way, whether it completed, failed, was cancelled
+  or interrupted. A ticket with a new request key, such as after `route`, can
+  then be claimed by any daemon.
+- **Retry.** `retry` ignores finished keys, so the same request runs again,
+  but still waits for a live lease held elsewhere.
+- **Losing a claim.** A daemon that stops renewing (stopped, crashed, or cut
+  off from the remote) loses the ticket once its lease expires, and another
+  daemon may take it over. When the first daemon next renews, it learns the
+  claim is lost: a running attempt is stopped, a cut-off run is not continued,
+  a sleeping run is not woken. The attempt becomes `interrupted` with
+  `Claim lost to <host>; another computer took this ticket`, and that note is
+  written to the local ticket. The loser never records the key as finished.
+- **Restart.** Claims and their leases are stored with the attempts. On
+  restart, a cut-off run continues, and a sleeping run wakes, only after its
+  claim is renewed. If the attempt's source was removed from the
+  configuration, or no longer has `claims`, the attempt cannot renew: it stays
+  stopped (not continued, woken or finished), `sources` and the attempt's
+  `claim.error` report `claim store unavailable: ...`, and it resumes once
+  claims are configured again.
+- **Enabling claims.** When `claims` is added to a source, its cut-off and
+  sleeping attempts from before have no claim. Each first acquires one, and
+  continues or wakes only once it holds it. If another daemon holds the ticket
+  or already finished the request, the attempt is not resumed: it becomes
+  `interrupted` with `Claims were enabled after this attempt started, ...`,
+  and that note is written to the local ticket. If the store cannot be
+  reached, it stays stopped and `sources` says so until the next try succeeds.
+  Attempts that had already finished keep no claim, so another computer does
+  not see their requests as finished.
+- **Identity.** Each state directory has a random daemon id, kept in its
+  journal; claims name it with the attempt id and the host name.
+
+### The Git claim store
+
+`gitClaims` keeps claims as refs on a Git remote that every computer can push
+to. Its options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `cwd` | required | A Git checkout, relative to the configuration file |
+| `remote` | `"origin"` | Remote name or URL holding the claims |
+| `refPrefix` | `refs/machines-dispatch/claims` | Where claim refs live; never under `refs/heads`, `refs/tags`, `refs/remotes`, `refs/notes` or other Git namespaces |
+| `ttlMs` | 10 minutes | How long one acquisition or renewal lasts |
+| `timeoutMs` | 30 seconds | Longest one `git` command may take |
+
+- One ref per scope, `<refPrefix>/<scope>`. Scopes that `git check-ref-format`
+  rejects are refused.
+- Each record is a commit with an empty tree whose message is JSON:
+  `{"version":1,"scope":...,"key":...,"holder":{"daemon","attempt","host"} or null,"expiresAt":...,"finished":[keys]}`.
+  Each update is a child of the previous one, so `git log` on the ref is the
+  claim's history.
+- Writes are pushes with `--force-with-lease` on the commit just read (or on
+  the ref not existing), so the remote compares and swaps. A rejected push
+  means another daemon changed the record: the store reads it again and
+  decides again; it never overwrites.
+- A lease names the commit it was written as. Renewing or finishing it
+  succeeds only while the ref still points at that commit; any later write,
+  even by the same daemon, makes it obsolete. A renewal whose push reached the
+  remote but whose answer was lost therefore counts as a lost claim on the
+  next poll: the attempt stops rather than risk running twice.
+- Records are fetched into `refs/machines-dispatch-fetched/...` in the local
+  checkout. Claims never touch branches, `HEAD`, the index, the working tree or
+  `FETCH_HEAD`, never run hooks, and push nothing but claim refs. `git` runs
+  without a shell and with `GIT_TERMINAL_PROMPT=0`, so the remote's
+  credentials must work without prompting.
+- **Clock skew.** Expiry compares the writer's clock with the reader's. Clocks
+  that differ by more than a fraction of the TTL let a lease look expired
+  early, and so let two daemons run the same ticket. Keep clocks synchronised
+  (NTP) and the TTL well above any skew.
+- **Partitions.** A daemon cut off from the remote keeps running its attempt
+  and retries renewal on each poll. If the outage outlasts the TTL, another
+  daemon may take the ticket over; the first finds out when it reconnects.
+
+The daemon still performs no other repository locking, Git synchronization of
+ticket files, cleanliness checks or automatic worktree creation.

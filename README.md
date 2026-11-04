@@ -64,7 +64,8 @@ export default ({ tk, github }) => [
 - Restart the daemon to reload registrations.
 
 Every field, the trust rules and the state directory:
-[Configuration](docs/configuration.md). For issues: [GitHub issues](docs/github.md).
+[Configuration](docs/configuration.md). Sharing tickets with another computer:
+[Recovery and multiple computers](#recovery-and-multiple-computers). For issues: [GitHub issues](docs/github.md).
 
 ## Run it
 
@@ -209,11 +210,26 @@ Machines Dispatch itself is not on npm. The full rules: [Configuration](docs/con
   touching the ticket.
 - A run cut off by a stop is continued once from its checkpoint on the next
   start. A second cut-off is written back as interrupted.
-- Deduplication covers one state directory only. Two computers can run the
-  same ticket, and the daemon does no repository locking, Git syncing or
-  worktree creation.
+- Without claims, deduplication covers one state directory only: two
+  computers that see the same tickets can run the same ticket.
+- With claims, at most one daemon runs a ticket at a time, and a request one
+  daemon finished does not run on another whose copy of the ticket is stale.
+  `gitClaims` keeps claims as refs on a Git remote both computers can push to:
 
-More: [Runs](docs/runs.md#recovery).
+  ```ts
+  export default ({ tk, gitClaims }) => [
+    tk({ id: "op", cwd: "./op", claims: gitClaims({ cwd: "./op" }) }),
+  ];
+  ```
+
+- A claim lasts 10 minutes and is renewed while its attempt runs, sleeps or
+  waits for writeback. A daemon that stops renewing loses the ticket once its
+  lease expires; on restart it writes a "claim lost" note instead of
+  continuing. Clocks on the computers must agree to well within that TTL.
+- The daemon does no other repository locking, and no Git syncing of ticket
+  files or worktree creation.
+
+More: [Runs](docs/runs.md#recovery), [Multiple computers](docs/runs.md#multiple-computers).
 
 ## Demo and checks
 

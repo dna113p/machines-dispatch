@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import * as v from "valibot";
 import {
   ReportConflict,
+  type ClaimStore,
   type JsonValue,
   type WorkItem,
   type WorkReport,
@@ -28,6 +29,8 @@ export interface GitHubOptions {
   fetch?: typeof fetch;
   /** Prefer environment or gh authentication in normal configurations. */
   token?: string;
+  /** Shares admission with other computers; see `gitClaims`. */
+  claims?: ClaimStore;
 }
 const positiveInteger = v.pipe(v.number(), v.integer(), v.minValue(1));
 const issueSchema = v.object({
@@ -447,6 +450,7 @@ export function github(options: GitHubOptions): WorkSource {
   }
   return {
     id: options.id,
+    ...(options.claims === undefined ? {} : { claims: options.claims }),
     async scan() {
       const issues = v.parse(
         v.array(issueSchema),

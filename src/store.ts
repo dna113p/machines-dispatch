@@ -11,7 +11,18 @@ export class Store {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, source TEXT NOT NULL, work_key TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS attempts_work ON attempts(source, work_key);
-      CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, attempt TEXT NOT NULL, time TEXT NOT NULL, data TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, attempt TEXT NOT NULL, time TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  }
+  /** A random identity for this state directory, kept for its lifetime. Claims name it. */
+  daemonId(): string {
+    this.db
+      .prepare("INSERT OR IGNORE INTO meta VALUES ('daemon-id', ?)")
+      .run(randomUUID());
+    const row = this.db
+      .prepare("SELECT value FROM meta WHERE name = 'daemon-id'")
+      .get();
+    return String(row!.value);
   }
   list(): Attempt[] {
     return this.db
@@ -44,6 +55,8 @@ export class Store {
     item: WorkItem,
     launch: LaunchRequest,
     retry = false,
+    /** A claim already acquired under `id`, persisted with the attempt. */
+    claimed?: { id: string; claim: NonNullable<Attempt["claim"]> },
   ): Attempt | undefined {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -65,7 +78,7 @@ export class Store {
         return undefined;
       const now = new Date().toISOString();
       const attempt: Attempt = {
-        id: randomUUID(),
+        id: claimed?.id ?? randomUUID(),
         source,
         item,
         launch,
@@ -73,6 +86,7 @@ export class Store {
         startedAt: now,
         updatedAt: now,
         delivery: "none",
+        ...(claimed ? { claim: claimed.claim } : {}),
       };
       this.db
         .prepare("INSERT INTO attempts VALUES (?, ?, ?, ?)")

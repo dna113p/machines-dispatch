@@ -32,6 +32,38 @@ The exported `WorkSource` interface has three operations:
 - Throw `ReportConflict` for invalid output or changes that need intervention.
   Ordinary errors are retried.
 
+## Claims
+
+A source may also carry `claims`, a `ClaimStore`, to share admission with
+daemons on other computers. Without it, two computers that see the same items
+can both run them. `tk(...)` and `github(...)` accept `claims` and pass it
+through; a custom source sets the property itself.
+
+| Operation | Does |
+| --- | --- |
+| `acquire({ scope, key, holder, retry })` | Returns `{ acquired: true, lease }`, or `{ acquired: false }` with the live `holder` and `expiresAt`, or with `finished: true` when `key` was finished and `retry` is false |
+| `renew(lease)` | Returns `{ ok: true, lease }` with a later `expiresAt`, or `{ ok: false, reason: "lost", holder }` when the record no longer names this lease |
+| `finish(lease)` | Records `key` as finished and ends the lease; throws `ClaimLost` when another holder has it |
+| `abandon(lease)` | Ends the lease without recording `key` |
+
+- `scope` is `<source id>/<item label>`, so labels must be stable ticket
+  identities; `key` is the item's `key`.
+- `holder` is `{ daemon, attempt, host }`. A `Lease` carries `scope`, `key`,
+  `holder`, `expiresAt`, `ttlMs` and store-specific JSON `data`; it is stored
+  with the attempt, so it must be JSON.
+- Per scope, a store must: create a missing record atomically; refuse a live
+  lease held by another holder; let exactly one of several takers replace an
+  expired lease (compare and swap on the record's version); refuse a finished
+  key unless `retry`; and renew or finish only a lease whose version is still
+  the record's current version (a lease made obsolete by any later write,
+  including the same holder's own renewal or reacquisition, is lost).
+- Network errors throw. The daemon then launches nothing, or keeps the claim
+  and retries renewal on the next poll.
+- `gitClaims(...)` is the provided implementation; see
+  [Multiple computers](runs.md#multiple-computers).
+- A report for an attempt stopped by a lost claim carries `reason`, which a
+  source may add to its note. tk does.
+
 ## The `request` client
 
 The exported `request` client lets a future MCP or Pi adapter use the same

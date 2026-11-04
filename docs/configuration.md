@@ -20,6 +20,7 @@ source.
 | `home` | both | A Machines configuration home, relative to `cwd`; otherwise normal Machines global/project discovery applies |
 | `input` | GitHub | Input supplied to every issue's run |
 | `repository`, `requiredLabels`, `excludedLabels`, `allowedAuthorAssociations` | GitHub | See [GitHub issues](github.md) |
+| `claims` | both | A claim store shared with other computers, such as `gitClaims(...)` (below) |
 
 Restart the daemon to reload registrations.
 
@@ -33,6 +34,34 @@ Restart the daemon to reload registrations.
   a writeback conflict, and the ticket is left unmodified.
 - Without it, a tk source launches whatever its tickets name.
 - The GitHub source is unaffected: its issues cannot select Machines.
+
+### `claims`
+
+- Without it, deduplication covers this daemon's state directory only: two
+  computers that see the same tickets can both run a ticket.
+- With it, the daemon claims each ticket before launching, so at most one
+  daemon runs it at a time and a finished request does not run elsewhere.
+- The configuration function also receives `gitClaims(options)`, which keeps
+  claims as refs on a Git remote. Its `cwd` is relative to the configuration
+  file:
+
+  ```ts
+  export default ({ tk, gitClaims }) => [
+    tk({ id: "op", cwd: "./op", claims: gitClaims({ cwd: "./op" }) }),
+  ];
+  ```
+
+- Options are `cwd`, `remote` (default `"origin"`), `refPrefix` (default
+  `refs/machines-dispatch/claims`), `ttlMs` (default 10 minutes) and
+  `timeoutMs` (default 30 seconds). Computers' clocks must agree to well within
+  the TTL. Details: [Multiple computers](runs.md#multiple-computers).
+- Every computer must register the source with the same `id`, since the id is
+  part of the claim.
+- `refPrefix` must start with `refs/` and may not sit under `refs/heads`,
+  `refs/tags`, `refs/remotes`, `refs/notes` or another namespace Git gives
+  meaning to; such a prefix is refused when the configuration loads.
+- Removing `claims` from a source, or the source itself, while it has claimed
+  attempts leaves those attempts stopped until claims are configured again.
 
 ### Several repositories in one registration
 
@@ -54,7 +83,8 @@ paths in ticket input. The Machine decides how to work in those repositories.
 - Defaults to `$XDG_STATE_HOME/machines-dispatch`, or
   `~/.local/state/machines-dispatch`, for a fresh installation.
 - Holds the local control socket, the execution journal, the singleton lock
-  database and the background daemon log.
+  database and the background daemon log. The journal also keeps the random
+  daemon id that claims name.
 - Every command accepts `--state-dir`; clients must use the daemon's state
   directory.
 - Pending Human questions and Agent observations are available through
